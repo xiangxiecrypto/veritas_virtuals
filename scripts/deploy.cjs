@@ -2,7 +2,7 @@ const hre = require("hardhat");
 const { ethers } = require("ethers");
 
 // Official Primus zkTLS verifier — same address on Base mainnet & Sepolia
-const DEFAULT_PRIMUS_ADDRESS = "0xC02234058caEaA9416506eABf6Ef3122fCA939E8";
+const DEFAULT_PRIMUS_ADDRESS = "0xCE7cefB3B5A7eB44B59F60327A53c9Ce53B0afdE";
 
 async function main() {
   const primusVerifierAddress =

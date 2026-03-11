@@ -24,7 +24,7 @@ async function main() {
   }
 
   const rpcUrl =
-    process.env.TRUST_LAYER_RPC_URL ??
+    process.env.TRUST_LAYER_RPC_URL ||
     (network === "base_mainnet"
       ? process.env.BASE_RPC_URL
       : process.env.BASE_SEPOLIA_RPC_URL);
@@ -55,7 +55,7 @@ async function main() {
 
   console.log("[live-test] Step 1: generating source-data attestation...");
   const sourceStep = await builder.addStep({
-    stepId: "source_data",
+    stepId: "data_source",
     url: "https://api.coinbase.com/v2/prices/ETH-USD/spot",
     method: "GET",
     headers: {},
@@ -68,7 +68,7 @@ async function main() {
 
   console.log("[live-test] Step 2: generating downstream attestation...");
   const llmStep = await builder.addStep({
-    stepId: "glm_inference",
+    stepId: "llm_inference",
     url: "https://api.z.ai/api/paas/v4/chat/completions",
     method: "POST",
     headers: {
@@ -76,10 +76,10 @@ async function main() {
       "Content-Type": "application/json",
     },
     bodyBuilder: (prev) => {
-      const rawSourceData = prev["source_data"].attestation.attestation.data;
-      const amount = prev["source_data"].data["amount"];
-      const base = prev["source_data"].data["base"];
-      const currency = prev["source_data"].data["currency"];
+      const rawSourceData = prev["data_source"].attestation.attestation.data;
+      const amount = prev["data_source"].data["amount"];
+      const base = prev["data_source"].data["base"];
+      const currency = prev["data_source"].data["currency"];
 
       return JSON.stringify({
         model: process.env.ZAI_MODEL ?? "glm-5",
@@ -93,7 +93,7 @@ async function main() {
           {
             role: "user",
             content: [
-              buildHashReference("source_data", rawSourceData),
+              buildHashReference("data_source", rawSourceData),
               `Observed price: ${amount} ${currency}`,
               `Asset: ${base}`,
               "Summarize this market snapshot in one sentence.",
@@ -115,7 +115,7 @@ async function main() {
       },
     ],
     dependsOn: {
-      stepId: "source_data",
+      stepId: "data_source",
       sourceField: "amount",
     },
   });

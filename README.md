@@ -241,9 +241,14 @@ See `contracts/policies/` for reference implementations.
 
 | Contract | Address |
 |---|---|
-| TrustLayerVerifier | `pending deployment` |
-| TrustLayerACPHook | `pending deployment` |
-| Primus zkTLS Verifier (Base mainnet & Sepolia) | `0xC02234058caEaA9416506eABf6Ef3122fCA939E8` |
+| TrustLayerVerifier (Base Sepolia) | `0x5D39Ef731fDfd3d49D033724d70be0FD0E31172c` |
+| TrustLayerACPHook (Base Sepolia) | `0x1306063A2b701Bc3D5912E36A9dbe414cCbDf385` |
+| FactCheckPolicy (Base Sepolia) | `0xDbbD7239947Bfe3320e98B937CDBF7553Bceb0Bd` |
+| Primus zkTLS Verifier (Base mainnet & Sepolia) | `0xCE7cefB3B5A7eB44B59F60327A53c9Ce53B0afdE` |
+
+See `docs/VERIFICATION_TRACE.md` for a full decoded verification trace covering:
+off-chain API requests, attestation payloads, on-chain bundle submission, and the
+final `Hook + Verifier + Policy` result.
 
 ---
 

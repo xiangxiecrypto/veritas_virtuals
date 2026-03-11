@@ -31,6 +31,121 @@ export class StepProver {
       : undefined;
   }
 
+  private isWrappedAttestationResult(value: any): boolean {
+    return Boolean(
+      value &&
+      typeof value === "object" &&
+      value.attestation &&
+      typeof value.attestation === "object" &&
+      typeof value.signature === "string",
+    );
+  }
+
+  private isOfficialAttestation(value: any): boolean {
+    return Boolean(
+      value &&
+      typeof value === "object" &&
+      typeof value.recipient === "string" &&
+      value.request &&
+      Array.isArray(value.signatures),
+    );
+  }
+
+  private toVerificationPayload(raw: any): any {
+    if (this.isOfficialAttestation(raw)) {
+      return raw;
+    }
+
+    if (this.isWrappedAttestationResult(raw)) {
+      return {
+        recipient: raw.attestation.recipient,
+        request: raw.attestation.request,
+        reponseResolve: raw.attestation.responseResolve ?? [],
+        data: raw.attestation.data,
+        attConditions: raw.attestation.attConditions,
+        timestamp: raw.attestation.timestamp,
+        additionParams: raw.attestation.additionParams,
+        attestors: [
+          {
+            attestorAddr: raw.attestor,
+            url: raw.attestorUrl,
+          },
+        ],
+        signatures: [raw.signature],
+      };
+    }
+
+    return raw;
+  }
+
+  private normalizeAttestationResult(raw: any): PrimusAttestationResult {
+    if (this.isWrappedAttestationResult(raw)) {
+      return raw as PrimusAttestationResult;
+    }
+
+    if (!this.isOfficialAttestation(raw)) {
+      throw new TrustLayerError(
+        `Unexpected Primus attestation result shape`,
+        TrustLayerErrorCode.ATTESTATION_INVALID,
+      );
+    }
+
+    const synthesizedTaskId = sha256(JSON.stringify(raw));
+
+    return {
+      attestation: {
+        recipient: raw.recipient,
+        request: {
+          url: raw.request?.url ?? "",
+          header: typeof raw.request?.header === "string"
+            ? raw.request.header
+            : JSON.stringify(raw.request?.header ?? {}),
+          method: raw.request?.method ?? "GET",
+          body: raw.request?.body ?? "",
+        },
+        responseResolve: raw.responseResolve ?? raw.reponseResolve ?? [],
+        data: raw.data ?? "",
+        attConditions: raw.attConditions ?? "",
+        timestamp: Number(raw.timestamp ?? Date.now()),
+        additionParams: raw.additionParams ?? "",
+      },
+      attestor: raw.attestors?.[0]?.attestorAddr ?? "",
+      signature: raw.signatures?.[0] ?? "0x",
+      reportTxHash: "",
+      taskId: synthesizedTaskId,
+      attestationTime: 0,
+      attestorUrl: raw.attestors?.[0]?.url ?? "",
+    };
+  }
+
+  private parseAttestedData(rawData: string): Record<string, string> {
+    try {
+      const parsed = JSON.parse(rawData);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return { raw: rawData };
+      }
+
+      const normalized: Record<string, string> = {};
+      for (const [key, value] of Object.entries(parsed)) {
+        if (typeof value === "string") {
+          try {
+            const inner = JSON.parse(value);
+            normalized[key] = typeof inner === "string"
+              ? inner
+              : JSON.stringify(inner);
+          } catch {
+            normalized[key] = value;
+          }
+        } else {
+          normalized[key] = JSON.stringify(value);
+        }
+      }
+      return normalized;
+    } catch {
+      return { raw: rawData };
+    }
+  }
+
   async prove(
     config: StepConfig,
     prevSteps: Record<string, StepResult>,
@@ -114,7 +229,11 @@ export class StepProver {
 
     let generateRequest: any;
     try {
-      generateRequest = this.primusCore.generateRequestParams(request, responseResolves);
+      generateRequest = this.primusCore.generateRequestParams(
+        request,
+        responseResolves,
+        providerWallet,
+      );
     } catch (err: any) {
       throw new TrustLayerError(
         `Primus generateRequestParams failed: ${err?.message ?? String(err)}`,
@@ -129,9 +248,9 @@ export class StepProver {
       // Some SDK versions may not require explicit mode set here.
     }
 
-    let attestResult: PrimusAttestationResult;
+    let rawAttestResult: any;
     try {
-      attestResult = await this.primusCore.startAttestation(generateRequest);
+      rawAttestResult = await this.primusCore.startAttestation(generateRequest);
     } catch (err: any) {
       throw new TrustLayerError(
         `Primus startAttestation failed: ${err?.message ?? String(err)}`,
@@ -141,7 +260,8 @@ export class StepProver {
     }
 
     // ── 5. Validate attestation signature off-chain ─────────
-    const isValid = this.primusCore.verifyAttestation(attestResult);
+    const verificationPayload = this.toVerificationPayload(rawAttestResult);
+    const isValid = this.primusCore.verifyAttestation(verificationPayload);
     if (!isValid) {
       throw new TrustLayerError(
         `Attestation signature invalid for step: ${config.stepId}`,
@@ -149,6 +269,8 @@ export class StepProver {
         config.stepId,
       );
     }
+
+    const attestResult = this.normalizeAttestationResult(rawAttestResult);
 
     // ── 6. Validate recipient matches provider wallet ────────
     if (
@@ -163,13 +285,7 @@ export class StepProver {
     }
 
     // ── 7. Parse extracted data ──────────────────────────────
-    let parsedData: Record<string, string> = {};
-    try {
-      parsedData = JSON.parse(attestResult.attestation.data);
-    } catch {
-      // data may be a plain string for some response types
-      parsedData = { raw: attestResult.attestation.data };
-    }
+    const parsedData = this.parseAttestedData(attestResult.attestation.data);
 
     const dataHash = sha256(attestResult.attestation.data);
 

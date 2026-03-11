@@ -57,7 +57,7 @@ const HOOK_ABI = [
   "function isProviderVerified(address provider, bytes32 chainHash) external view returns (bool)",
 ];
 
-const PRIMUS_ZKTLS_ADDRESS = "0xC02234058caEaA9416506eABf6Ef3122fCA939E8";
+const PRIMUS_ZKTLS_ADDRESS = "0xCE7cefB3B5A7eB44B59F60327A53c9Ce53B0afdE";
 
 export const CONTRACT_ADDRESSES = {
   base_mainnet: {
@@ -66,8 +66,8 @@ export const CONTRACT_ADDRESSES = {
     PrimusZKTLS: PRIMUS_ZKTLS_ADDRESS,
   },
   base_sepolia: {
-    TrustLayerVerifier: "",
-    TrustLayerACPHook: "",
+    TrustLayerVerifier: "0x5D39Ef731fDfd3d49D033724d70be0FD0E31172c",
+    TrustLayerACPHook: "0x1306063A2b701Bc3D5912E36A9dbe414cCbDf385",
     PrimusZKTLS: PRIMUS_ZKTLS_ADDRESS,
   },
 } as const;
@@ -98,7 +98,10 @@ export class OnChainSubmitter {
     this.provider = new ethers.JsonRpcProvider(rpc);
     this.signer = new ethers.Wallet(privateKey, this.provider);
 
-    const addresses = { ...CONTRACT_ADDRESSES[network], ...overrides };
+    const definedOverrides = Object.fromEntries(
+      Object.entries(overrides ?? {}).filter(([, value]) => Boolean(value)),
+    ) as ContractAddressOverrides;
+    const addresses = { ...CONTRACT_ADDRESSES[network], ...definedOverrides };
     this.verifierAddress = addresses.TrustLayerVerifier || undefined;
     this.hookAddress = addresses.TrustLayerACPHook || undefined;
   }
