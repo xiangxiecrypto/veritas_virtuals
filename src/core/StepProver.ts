@@ -37,10 +37,13 @@ export class StepProver {
     providerWallet: string,
   ): Promise<StepResult> {
     const mode = config.mode ?? "proxytls";
-    // ── 1. Domain whitelist check ───────────────────────────
+    // ── 1. Optional off-chain domain check ──────────────────
+    // Only enforced when the caller passes a trustedDomains set.
+    // If omitted, all domains are allowed at the SDK level.
+    // On-chain domain enforcement belongs in IEvaluatorPolicy contracts.
     if (!isTrustedDomain(config.url, this.trustedDomains)) {
       throw new TrustLayerError(
-        `Domain not in trusted whitelist: ${config.url}`,
+        `Domain not in configured trustedDomains: ${config.url}`,
         TrustLayerErrorCode.UNTRUSTED_DOMAIN,
         config.stepId,
       );
