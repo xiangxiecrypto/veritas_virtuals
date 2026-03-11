@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { ethers } from "ethers";
 
 /**
  * SHA-256 hash of a string, returned as a hex string.
@@ -10,13 +11,18 @@ export function sha256(input: string): string {
 
 /**
  * Compute the chain hash for a ProofBundle.
- * This is a rolling keccak-style hash over all taskIds in order.
- * Matches the on-chain computation in TrustLayerVerifier.sol.
+ * This matches the on-chain computation in `TrustLayerVerifier.sol`:
+ * `rollingHash = keccak256(abi.encodePacked(rollingHash, att.taskId))`.
+ *
+ * The return value is a bytes32 hex string with `0x` prefix.
  */
 export function computeChainHash(taskIds: string[]): string {
-  let rolling = "";
-  for (const id of taskIds) {
-    rolling = sha256(rolling + id);
+  let rolling: string = ethers.ZeroHash; // bytes32(0)
+  for (const taskId of taskIds) {
+    rolling = ethers.solidityPackedKeccak256(
+      ["bytes32", "string"],
+      [rolling, taskId],
+    );
   }
   return rolling;
 }

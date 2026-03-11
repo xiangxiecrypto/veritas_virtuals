@@ -120,7 +120,7 @@ async function executeFactCheck(job: any): Promise<void> {
         parsePath: "$.results[0].publishedAt",
       },
     ],
-    mode: "proxytls",  // Lower latency for public data sources
+    // mode omitted -> defaults to proxytls
   });
 
   console.log(`[TrustLayer] Data source proven. Hash: ${dataSourceResult.dataHash.slice(0, 16)}...`);
@@ -202,7 +202,6 @@ async function executeFactCheck(job: any): Promise<void> {
         parsePath: "$.model",
       },
     ],
-    mode: "mpctls",       // Higher security for authenticated API with API key
     dependsOn: {
       stepId: "data_source",
       sourceField: "article_content",  // Enforces: SHA256(content) ∈ LLM prompt

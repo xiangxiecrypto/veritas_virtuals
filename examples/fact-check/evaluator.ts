@@ -90,7 +90,9 @@ export async function evaluateOnChain(
   }
 
   // Submit on-chain for permanent record
-  return submitter.submitBundle(bundle, providerAddress);
+  // NOTE: In production this is invoked by ACP Job contracts, which know the jobId.
+  // For a buyer-side manual submission, you must pass a jobId that your hook expects.
+  return submitter.submitBundle(0, bundle, providerAddress);
 }
 
 // ── Example ACP onEvaluate integration ───────────────────────

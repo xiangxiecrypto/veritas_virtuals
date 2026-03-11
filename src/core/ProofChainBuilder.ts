@@ -13,9 +13,13 @@ import { StepProver } from "./StepProver.js";
  * ProofChainBuilder
  *
  * The main entry point for TrustLayer. Providers use this class to:
- *  1. Register ordered proof steps (data source fetches, LLM calls)
+ *  1. Register ordered proof steps (generic HTTPS API calls)
  *  2. Execute them in sequence with chain linkage enforcement
  *  3. Build a ProofBundle to include in the ACP Deliverable Memo
+ *
+ * Each step's attestation is generated off-chain through
+ * `@primuslabs/zktls-core-sdk`. The resulting bundle can later be verified
+ * off-chain again, or optionally verified on-chain by TrustLayer contracts.
  *
  * Example:
  *
@@ -38,7 +42,7 @@ export class ProofChainBuilder {
   private stepConfigs: StepConfig[] = [];
   private stepResults: Record<string, StepResult> = {};
   private initialized = false;
-  private readonly config: Required<ProofChainBuilderConfig>;
+  private readonly config: ProofChainBuilderConfig & { maxAttestationAge: number };
 
   constructor(config: ProofChainBuilderConfig) {
     this.config = {
@@ -47,18 +51,29 @@ export class ProofChainBuilder {
     };
   }
 
-  /** Lazy-initialize the Primus SDK */
+  /** Lazy-initialize the Primus core-sdk */
   private async ensureInitialized(): Promise<void> {
     if (this.initialized) return;
 
-    // Dynamic import — @primuslabs/network-core-sdk is CommonJS
-    const { PrimusNetwork } = await import("@primuslabs/network-core-sdk");
-    this.primus = new PrimusNetwork();
-    await this.primus.init(
-      this.config.primusAppId,
-      this.config.primusAppSecret,
-    );
-    this.prover = new StepProver(this.primus);
+    // Dynamic import — @primuslabs/zktls-core-sdk is CommonJS
+    let PrimusCoreTLS: any;
+    try {
+      ({ PrimusCoreTLS } = await import("@primuslabs/zktls-core-sdk"));
+    } catch (err: any) {
+      throw new TrustLayerError(
+        [
+          "Primus SDK is not available in this environment.",
+          "Install/build the optional dependency `@primuslabs/zktls-core-sdk` to generate attestations.",
+          `Original error: ${err?.message ?? String(err)}`,
+        ].join(" "),
+        TrustLayerErrorCode.PRIMUS_INIT_FAILED,
+      );
+    }
+    this.primus = new PrimusCoreTLS();
+    await this.primus.init(this.config.primusAppId, this.config.primusAppSecret);
+    this.prover = new StepProver(this.primus, {
+      trustedDomains: this.config.trustedDomains,
+    });
     this.initialized = true;
   }
 

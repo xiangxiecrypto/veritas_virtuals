@@ -6,7 +6,7 @@ import {
   TrustLayerErrorCode,
 } from "../types/index.js";
 import { sha256, bodyContainsHash } from "../utils/hash.js";
-import { isTrustedDomain } from "../utils/domain.js";
+import { isTrustedDomain, TRUSTED_DOMAINS } from "../utils/domain.js";
 
 /**
  * StepProver handles the execution of a single proof step.
@@ -15,22 +15,30 @@ import { isTrustedDomain } from "../utils/domain.js";
  *  1. Validate the target URL against the trusted domain whitelist
  *  2. Enforce chain linkage: if dependsOn is set, verify the body
  *     contains SHA256(parentStep.data[sourceField])
- *  3. Execute the Primus zkTLS attestation
- *  4. Validate the returned attestation signature
+ *  3. Execute the Primus core-sdk attestation flow off-chain
+ *  4. Validate the returned attestation signature off-chain with the SDK
  *  5. Return a StepResult with parsed data and dataHash
  */
 export class StepProver {
-  // PrimusNetwork instance is injected — typed as any because
-  // @primuslabs/network-core-sdk ships CommonJS without .d.ts
-  constructor(private readonly primusNetwork: any) {}
+  // PrimusCoreTLS instance is injected — typed as any because
+  // @primuslabs/zktls-core-sdk ships CommonJS without stable .d.ts
+  private readonly trustedDomains: Set<string>;
+
+  constructor(
+    private readonly primusCore: any,
+    opts?: { trustedDomains?: Iterable<string> },
+  ) {
+    this.trustedDomains = new Set(opts?.trustedDomains ?? TRUSTED_DOMAINS);
+  }
 
   async prove(
     config: StepConfig,
     prevSteps: Record<string, StepResult>,
     providerWallet: string,
   ): Promise<StepResult> {
+    const mode = config.mode ?? "proxytls";
     // ── 1. Domain whitelist check ───────────────────────────
-    if (!isTrustedDomain(config.url)) {
+    if (!isTrustedDomain(config.url, this.trustedDomains)) {
       throw new TrustLayerError(
         `Domain not in trusted whitelist: ${config.url}`,
         TrustLayerErrorCode.UNTRUSTED_DOMAIN,
@@ -78,45 +86,58 @@ export class StepProver {
       }
     }
 
-    // ── 4. Build Primus request params ──────────────────────
-    const requests = [
-      {
-        url: config.url,
-        method: config.method,
-        header: config.headers,
-        body,
-      },
-    ];
+    // ── 4. Execute Primus Core SDK attestation off-chain ─────
+    // Core-SDK flow:
+    //   generateRequestParams(request, responseResolves)
+    //   setAttMode({ algorithmType })
+    //   startAttestation(generateRequest)
+    const request = {
+      url: config.url,
+      method: config.method,
+      header: config.headers,
+      body,
+    };
 
-    const responseResolves = [config.responseResolves];
+    // Core-SDK example uses { keyName, parsePath }.
+    // We keep compatibility with our richer type by mapping through.
+    const responseResolves = config.responseResolves.map((r) => ({
+      keyName: r.keyName,
+      parsePath: r.parsePath,
+      parseType: r.parseType,
+      op: r.op,
+      value: r.value,
+    }));
 
-    // ── 5. Submit task to Primus network ────────────────────
-    let submitTaskResult: any;
+    let generateRequest: any;
     try {
-      submitTaskResult = await this.primusNetwork.submitTask(requests);
+      generateRequest = this.primusCore.generateRequestParams(request, responseResolves);
     } catch (err: any) {
       throw new TrustLayerError(
-        `Primus submitTask failed: ${err.message}`,
+        `Primus generateRequestParams failed: ${err?.message ?? String(err)}`,
         TrustLayerErrorCode.PRIMUS_INIT_FAILED,
         config.stepId,
       );
     }
 
-    // ── 6. Execute attestation ──────────────────────────────
-    const attestParams = {
-      ...submitTaskResult,
-      requests,
-      responseResolves,
-      additionParams: JSON.stringify({ algorithmType: config.mode }),
-    };
+    try {
+      generateRequest.setAttMode({ algorithmType: mode });
+    } catch {
+      // Some SDK versions may not require explicit mode set here.
+    }
 
-    const attestResults: PrimusAttestationResult[] =
-      await this.primusNetwork.attest(attestParams);
+    let attestResult: PrimusAttestationResult;
+    try {
+      attestResult = await this.primusCore.startAttestation(generateRequest);
+    } catch (err: any) {
+      throw new TrustLayerError(
+        `Primus startAttestation failed: ${err?.message ?? String(err)}`,
+        TrustLayerErrorCode.PRIMUS_INIT_FAILED,
+        config.stepId,
+      );
+    }
 
-    const attestResult = attestResults[0];
-
-    // ── 7. Validate attestation signature ───────────────────
-    const isValid = this.primusNetwork.verifyAttestation(attestResult);
+    // ── 5. Validate attestation signature off-chain ─────────
+    const isValid = this.primusCore.verifyAttestation(attestResult);
     if (!isValid) {
       throw new TrustLayerError(
         `Attestation signature invalid for step: ${config.stepId}`,

@@ -2,7 +2,7 @@
 //  TrustLayer — Core Types
 // ─────────────────────────────────────────────────────────────
 
-// ── Primus SDK types (mirrored from @primuslabs/network-core-sdk) ──
+// ── Primus SDK types (mirrored from @primuslabs/zktls-core-sdk / attestation shape) ──
 
 export interface PrimusRequest {
   url: string;
@@ -32,12 +32,12 @@ export interface PrimusAttestation {
 
 export interface PrimusAttestationResult {
   attestation: PrimusAttestation;
-  attestor: string;            // Attestor node address (TEE)
+  attestor: string;            // Attestation signer / verifier-side identifier
   signature: string;           // ECDSA signature over attestation
   reportTxHash: string;        // On-chain report tx
   taskId: string;              // Unique task identifier
   attestationTime: number;     // Time taken in ms
-  attestorUrl: string;         // Phala TEE node URL
+  attestorUrl: string;         // Verifier/attestation service URL
 }
 
 // ── TrustLayer Step Config ──────────────────────────────────
@@ -66,10 +66,11 @@ export interface StepConfig {
   responseResolves: PrimusResponseResolve[];
 
   /**
-   * proxytls — lower latency, suitable for public data source reads
-   * mpctls   — higher security, suitable for authenticated APIs (LLMs)
+   * zkTLS mode:
+   *  - proxytls — lower latency, suitable for most HTTPS APIs (DEFAULT)
+   *  - mpctls   — higher security, suitable for highly sensitive authenticated APIs
    */
-  mode: AttestationMode;
+  mode?: AttestationMode;
 
   /**
    * If set, TrustLayer will verify that this step's request body
@@ -126,6 +127,14 @@ export interface ProofChainBuilderConfig {
   primusAppSecret: string;
   /** Provider's wallet address — embedded in each attestation as recipient */
   providerWallet: string;
+  /**
+   * Optional trusted domain whitelist enforced off-chain before submitting
+   * to Primus. If omitted, the SDK uses the built-in default whitelist.
+   *
+   * Note: the ultimate security boundary is still the on-chain whitelist
+   * enforced by `TrustLayerVerifier.sol`.
+   */
+  trustedDomains?: Iterable<string>;
   /**
    * Maximum age of an attestation in ms.
    * Attestations older than this will be rejected by the on-chain verifier.

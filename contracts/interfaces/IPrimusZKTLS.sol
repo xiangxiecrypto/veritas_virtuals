@@ -3,8 +3,12 @@ pragma solidity ^0.8.20;
 
 /**
  * @title IPrimusZKTLS
- * @notice Interface for the Primus zkTLS on-chain verifier.
- * Deployed on Base mainnet at: 0xCE7cefB3B5A7eB44B59F60327A53c9Ce53B0afdE
+ * @notice Interface for the Primus attestation verifier contract used by
+ * enterprise/core-sdk attestation consumers.
+ *
+ * TrustLayer uses `@primuslabs/zktls-core-sdk` to generate attestations
+ * off-chain. This contract is only used when a caller wants to verify the
+ * resulting attestation on-chain as an additional guarantee.
  */
 interface IPrimusZKTLS {
     struct AttestationRequest {
@@ -45,7 +49,7 @@ interface IPrimusZKTLS {
     }
 
     /**
-     * @notice Verify a zkTLS attestation produced by a Primus TEE node.
+     * @notice Verify a zkTLS attestation on-chain.
      * Reverts if the attestation is invalid.
      * @param attestation The full attestation struct
      */

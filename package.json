@@ -31,8 +31,10 @@
     "web3"
   ],
   "dependencies": {
-    "@primuslabs/network-core-sdk": "^1.0.0",
     "ethers": "^6.13.0"
+  },
+  "optionalDependencies": {
+    "@primuslabs/zktls-core-sdk": "^0.1.9"
   },
   "peerDependencies": {
     "@virtuals-protocol/acp-node": "^1.0.0"

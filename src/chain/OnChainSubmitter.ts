@@ -9,20 +9,20 @@ const VERIFIER_ABI = [
 
 // Minimal ABI for TrustLayerACPHook
 const HOOK_ABI = [
-  "function submitAndVerify(bytes calldata encodedBundle, address providerAddress) external returns (bool)",
-  "function isProviderVerified(address provider, bytes32 chainHash) view returns (bool)",
+  "function verifyDeliverable(uint256 jobId, address providerAddress, bytes calldata encodedBundle) external returns (bool)",
+  "function isProviderVerified(address provider, bytes32 chainHash) external view returns (bool)",
 ];
 
 export const CONTRACT_ADDRESSES = {
   base_mainnet: {
     TrustLayerVerifier: "", // pending deployment
     TrustLayerACPHook: "", // pending deployment
-    PrimusZKTLS: "0xCE7cefB3B5A7eB44B59F60327A53c9Ce53B0afdE",
+    PrimusZKTLS: "", // unconfirmed in repo; inject from deployment/config
   },
   base_sepolia: {
     TrustLayerVerifier: "", // pending deployment
     TrustLayerACPHook: "", // pending deployment
-    PrimusZKTLS: "0xCE7cefB3B5A7eB44B59F60327A53c9Ce53B0afdE",
+    PrimusZKTLS: "", // unconfirmed in repo; inject from deployment/config
   },
 } as const;
 
@@ -79,19 +79,17 @@ export class OnChainSubmitter {
   }
 
   /**
-   * Submit the ProofBundle on-chain (gas required).
-   * Called by the ACP Hook contract during job evaluation.
+   * Submit the ProofBundle to the ACP hook contract (gas required).
+   * In production, ACP Job contracts call the hook during evaluation.
    */
   async submitBundle(
+    jobId: number | bigint,
     bundle: ProofBundle,
     providerAddress: string,
   ): Promise<OnChainVerificationResult> {
     try {
-      const encoded = ethers.AbiCoder.defaultAbiCoder().encode(
-        ["bytes"],
-        [ethers.toUtf8Bytes(JSON.stringify(bundle))],
-      );
-      const tx = await this.hook.submitAndVerify(encoded, providerAddress);
+      const encoded = this.encodeBundleForHook(bundle);
+      const tx = await this.hook.verifyDeliverable(jobId, providerAddress, encoded);
       const receipt = await tx.wait();
       return { verified: true, txHash: receipt.hash };
     } catch (err: any) {
@@ -108,7 +106,7 @@ export class OnChainSubmitter {
   ): Promise<boolean> {
     return this.hook.isProviderVerified(
       providerAddress,
-      ethers.hexlify(ethers.toUtf8Bytes(chainHash)),
+      chainHash,
     );
   }
 
@@ -119,9 +117,28 @@ export class OnChainSubmitter {
         stepId: s.stepId,
         attestation: s.attestation,
       })),
-      chainHash: ethers.hexlify(ethers.toUtf8Bytes(bundle.chainHash)),
+      chainHash: bundle.chainHash,
       providerWallet: bundle.providerWallet,
       builtAt: BigInt(bundle.builtAt),
     };
+  }
+
+  private encodeBundleForHook(bundle: ProofBundle): string {
+    // Solidity: abi.decode(encodedBundle, (ITrustLayer.ProofBundle))
+    // Therefore the hook expects `abi.encode(ProofBundle)`.
+    const abi = ethers.AbiCoder.defaultAbiCoder();
+    const tupleType =
+      "tuple(" +
+      "tuple(string stepId, " +
+      "tuple(" +
+      "tuple(address recipient, tuple(string url, string header, string method, string body)[] request, tuple(tuple(string keyName, string parseType, string parsePath) oneUrlResponseResolve)[][] responseResolve, string data, string attConditions, uint256 timestamp, string additionParams) attestation, " +
+      "address attestor, string signature, string reportTxHash, string taskId, uint256 attestationTime, string attestorUrl" +
+      ")" +
+      " attestation" +
+      ")[] steps, " +
+      "bytes32 chainHash, address providerWallet, uint256 builtAt" +
+      ")";
+
+    return abi.encode([tupleType], [this.encodeBundle(bundle)]);
   }
 }

@@ -2,13 +2,13 @@
 
 > A verifiable proof layer for Virtuals ACP — powered by Primus zkTLS
 
-TrustLayer is a cryptographic middleware that allows ACP Providers to **prove** to Buyers (and on-chain contracts) that:
+TrustLayer is a cryptographic middleware that allows ACP Providers to **prove** to Buyers that a sequence of **HTTPS API calls** actually happened as claimed, and that outputs of later calls were derived from earlier verified responses.
 
 1. They actually fetched data from a specific real-world HTTPS endpoint (e.g. Reuters, SEC, CoinGecko)
-2. They fed that **exact, unmodified** data into a specific LLM API (e.g. GPT-4o on `api.openai.com`)
-3. The LLM output in their Deliverable Memo is **genuinely what the LLM returned** — not fabricated
+2. They fed that **exact, unmodified** data into a subsequent HTTPS call (often an LLM API, but not limited to OpenAI)
+3. The final output in their Deliverable Memo is **genuinely what the attested API returned** — not fabricated
 
-Every step is attested using [Primus zkTLS](https://primuslabs.xyz), runs inside Phala TEE hardware, and is verified on-chain on Base mainnet before the ACP escrow releases funds.
+Every step is attested **off-chain** using [Primus zkTLS](https://primuslabs.xyz) via `@primuslabs/zktls-core-sdk`. The resulting attestation can be verified off-chain in the SDK, and can also be verified on-chain when ACP escrow release needs an on-chain guarantee.
 
 ---
 
@@ -24,24 +24,25 @@ TrustLayer fixes this at the **cryptographic layer**, not at the reputation laye
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  Layer 4: ACP Contract Layer (Base Chain)                    │
+│  Layer 4: Optional On-chain Verification (Base Chain)        │
 │  TrustLayerVerifier.sol ──► IPrimusZKTLS.verifyAttestation   │
-│  Escrow release gated on: proof chain verified ✅            │
+│  Used when escrow release should be gated on-chain           │
 └───────────────────────────┬──────────────────────────────────┘
                             │ on-chain verification
 ┌───────────────────────────▼──────────────────────────────────┐
 │  Layer 3: Proof Chain Builder (Provider runtime)             │
 │  ProofChainBuilder.ts                                        │
-│  ├── Step A: Data Source Attestation  (reuters, sec, ...)    │
-│  ├── Step B: LLM Inference Attestation (api.openai.com)      │
-│  └── Linkage: SHA256(responseA) ∈ requestB.body             │
+│  ├── Step A: HTTPS Attestation (any trusted API endpoint)    │
+│  ├── Step B: HTTPS Attestation (often an LLM, but general)   │
+│  └── Linkage: SHA256(stepA.data) ∈ stepB.request.body        │
 └───────────────────────────┬──────────────────────────────────┘
                             │ multi-URL aggregated attestation
 ┌───────────────────────────▼──────────────────────────────────┐
-│  Layer 2: Primus zkTLS Layer                                 │
-│  @primuslabs/network-core-sdk                                │
-│  ├── MPC-TLS mode  — high security (LLM API calls)          │
-│  └── Proxy-TLS mode — high throughput (data source fetches) │
+│  Layer 2: Primus Enterprise Core-SDK                         │
+│  @primuslabs/zktls-core-sdk                                  │
+│  ├── Attestation generation happens off-chain                │
+│  ├── Proxy-TLS mode — default, better production latency     │
+│  └── MPC-TLS mode  — optional for rare sensitive requests    │
 └───────────────────────────┬──────────────────────────────────┘
                             │ TLS session witnessing
 ┌───────────────────────────▼──────────────────────────────────┐
@@ -58,7 +59,7 @@ TrustLayer fixes this at the **cryptographic layer**, not at the reputation laye
 | Provider tampers data before sending to LLM | Attestation_2 body must contain SHA256(Attestation_1.data) — tampering breaks the hash |
 | Provider uses a local fake LLM | Attestation_2 proves request was sent to `api.openai.com`, domain whitelist enforced on-chain |
 | Provider replays an old proof | Timestamp check: attestation must be within the Job SLA window |
-| Provider colludes with Primus attestor | Primus Attestors run inside Phala TEE — hardware-level isolation |
+| Provider forges an attestation locally | SDK/off-chain verification and optional on-chain verification both reject invalid attestations |
 | Provider swaps recipient address | Contract verifies `recipient == provider wallet address` |
 | LLM hallucination | ❌ Out of scope — this is a model-layer problem, not an engineering problem |
 
@@ -90,9 +91,12 @@ trust-layer/
 ├── sdk/
 │   └── index.ts                     # Public SDK exports
 ├── examples/
-│   └── fact-check/
-│       ├── provider.ts              # Full ArAIstotle-style example
-│       └── evaluator.ts             # Buyer-side evaluation example
+│   ├── fact-check/
+│   │   ├── provider.ts              # Full ArAIstotle-style example
+│   │   └── evaluator.ts             # Buyer-side evaluation example
+│   └── generic-api-pipeline/
+│       ├── provider.ts              # Generic HTTPS source -> scoring pipeline
+│       └── evaluator.ts             # Generic buyer-side verification example
 ├── docs/
 │   ├── ARCHITECTURE.md              # Deep-dive architecture doc
 │   ├── INTEGRATION_GUIDE.md         # Provider integration guide
@@ -123,7 +127,7 @@ const builder = new ProofChainBuilder({
   providerWallet: process.env.PROVIDER_WALLET!,
 });
 
-// Step 1: Prove you fetched real data
+// Step 1: Prove you fetched real data from a trusted HTTPS API
 await builder.addStep({
   stepId: "data_source",
   url: "https://reuters.com/api/search?q=tesla+robotaxi",
@@ -132,30 +136,32 @@ await builder.addStep({
   responseResolves: [
     { keyName: "article_content", parseType: "json", parsePath: "$.results[0].body" }
   ],
-  mode: "proxytls",
+  // mode omitted -> defaults to proxytls
 });
 
-// Step 2: Prove you called a real LLM with that data
+// Step 2: Prove you called a real downstream HTTPS API (often an LLM) with that exact data
 await builder.addStep({
-  stepId: "llm_inference",
+  stepId: "downstream_call",
   url: "https://api.openai.com/v1/chat/completions",
   method: "POST",
   headers: { "Authorization": `Bearer ${process.env.OPENAI_KEY}` },
-  bodyBuilder: (prevSteps) => JSON.stringify({
-    model: "gpt-4o",
-    messages: [{
-      role: "user",
-      // Hash of previous step's data is embedded — creates cryptographic linkage
-      content: `[source_hash:${prevSteps["data_source"].dataHash}]\n${prevSteps["data_source"].data}\n\nFact check: tesla robotaxi 2025`
-    }],
-    seed: 42,
-  }),
+  bodyBuilder: (prevSteps) => {
+    const content = prevSteps["data_source"].data["article_content"];
+    return JSON.stringify({
+      model: "gpt-4o",
+      messages: [{
+        role: "user",
+        // Embed SHA256(content) in the body — creates cryptographic linkage
+        content: `[source_hash:data_source:${prevSteps["data_source"].dataHash}]\n${content}\n\nAnalyze: tesla robotaxi 2025`
+      }],
+      seed: 42,
+    });
+  },
   responseResolves: [
-    { keyName: "verdict", parseType: "json", parsePath: "$.choices[0].message.content.verdict" },
+    { keyName: "result", parseType: "json", parsePath: "$.choices[0].message.content" },
     { keyName: "model",   parseType: "json", parsePath: "$.model" }
   ],
-  mode: "mpctls",             // Higher security for API key protection
-  dependsOn: "data_source",   // Enforces chain linkage verification
+  dependsOn: { stepId: "data_source", sourceField: "article_content" }, // Enforces chain linkage verification
 });
 
 const proofBundle = await builder.build();
@@ -168,23 +174,28 @@ await job.deliver(JSON.stringify({
 }));
 ```
 
-### 3. On-chain Verification (inside ACP evaluator)
+### 3. Verification Options
 
 ```solidity
+// Optional on-chain verification inside ACP evaluation
 TrustLayerVerifier verifier = TrustLayerVerifier(TRUST_LAYER_VERIFIER_BASE);
 bool verified = verifier.verifyProofBundle(proofBundle, providerAddress);
 require(verified, "TrustLayer: proof chain invalid");
 ```
 
+You can also verify attestations off-chain with the Primus core-sdk before ever
+calling a contract. TrustLayer uses that off-chain verification path during
+proof generation already.
+
 ---
 
-## Contract Addresses (Base Mainnet)
+## Contract Addresses
 
 | Contract | Address |
 |---|---|
 | TrustLayerVerifier | `pending deployment` |
 | TrustLayerACPHook | `pending deployment` |
-| Primus zkTLS (Base) | `0xCE7cefB3B5A7eB44B59F60327A53c9Ce53B0afdE` |
+| Primus verifier (Base) | `unconfirmed in this repo` |
 
 ---
 
@@ -197,6 +208,16 @@ The on-chain verifier enforces that all attested URLs belong to a whitelist of t
 **LLM APIs:** `api.openai.com`, `api.anthropic.com`, `api.mistral.ai`, `generativelanguage.googleapis.com`
 
 Whitelist governance is managed by the contract owner (Phase 1), with plans for decentralized staking-based governance in Phase 4.
+
+> Note: Off-chain, the SDK can be configured with a custom `trustedDomains` list for early rejection.
+> On-chain, `TrustLayerVerifier.sol` remains the final enforcement point.
+
+## Default TLS Mode
+
+TrustLayer defaults to `proxytls`.
+
+Use `mpctls` only when you explicitly set `mode: "mpctls"` for a step and are
+comfortable with the additional latency.
 
 ---
 

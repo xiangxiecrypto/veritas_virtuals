@@ -2,183 +2,272 @@
 
 ## The Core Problem
 
-Virtuals ACP's `Deliverable Memo` is just a signed JSON payload. Nothing in the
-protocol prevents a Provider from fabricating results. The escrow release is
-gated on a human or Agent signature — both of which can be deceived.
+Virtuals ACP's `Deliverable Memo` is just a signed JSON payload. It proves that
+a Provider submitted *something*, but it does not prove that the Provider
+actually called the HTTPS APIs they claim to have used, nor that later results
+were derived from earlier verified data.
 
-TrustLayer answers one question: **how do you prove that the content of a
-Deliverable Memo genuinely originated from the data sources and LLMs the
-Provider claims to have used?**
+TrustLayer answers this question:
+
+**How do you prove that a deliverable genuinely came from a specific sequence of
+HTTPS API calls?**
+
+This applies to many workflows:
+
+- fetch market data, then call a risk engine
+- fetch a private dataset, then call an LLM
+- fetch a custody balance, then call a portfolio analyzer
+- fetch news, then call a fact-checking or summarization model
+
+The system is intentionally **general-purpose**. Fact check is only one example.
 
 ---
 
 ## Trust Model
 
 ### What TrustLayer Does NOT Trust
+
 - The Provider process itself
-- The Provider's claims about what APIs they called
-- Any off-chain log or trace the Provider submits
-- The Buyer's ability to independently verify results
+- The Provider's claims about which APIs were called
+- Any off-chain logs or traces submitted by the Provider
+- A Buyer's ability to manually inspect every intermediate result
 
 ### What TrustLayer DOES Trust
-- **Primus Attestor nodes** — TEE-hardened, hardware-isolated, cannot collude
-- **TLS certificates** — the standard PKI that secures the entire internet
-- **SHA-256** — cryptographic hash function
-- **The Base blockchain** — immutable record of all verifications
+
+- **Primus core-sdk attestation format and verifier logic**
+- **TLS certificates** and the standard HTTPS trust model
+- **SHA-256** for chain linkage between steps
+- **Base** when optional on-chain verification is required
 
 ---
 
 ## Proof Chain Mechanics
 
 ### Single Step
-A single step proves one HTTPS request-response pair:
+
+A single TrustLayer step proves one HTTPS request-response pair.
+In the enterprise/core-sdk model, the proof is generated **off-chain** by the
+Provider runtime:
 
 ```
-┌───────────────────────────────────────────────────┐
-│  Primus Attestor (Phala TEE)                      │
-│                                                   │
-│  Client → [MPC/Proxy TLS] → reuters.com           │
-│                           ← { article_content }   │
-│                                                   │
-│  Attestation {                                    │
-│    recipient: providerWallet,                     │
-│    request: { url, headers, body },               │
-│    data: '{"article_content":"..."}',             │  ← verified response
-│    timestamp: 1741689824000,                      │
-│    signature: attestorECDSA                       │
-│  }                                                │
-└───────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│ Provider runtime                                       │
+│   └─ @primuslabs/zktls-core-sdk                        │
+│        ├─ init(appId, appSecret)                       │
+│        ├─ generateRequestParams(...)                   │
+│        ├─ setAttMode(...)                              │
+│        ├─ startAttestation(...)                        │
+│        └─ verifyAttestation(...)                       │
+│                                                        │
+│ Output: Attestation { request, data, timestamp, ... }  │
+└────────────────────────────────────────────────────────┘
 ```
 
-The Attestor's signature proves: the response **actually came from reuters.com
-over a properly negotiated TLS session** at the given timestamp. The Provider
-cannot forge this without compromising the Primus TEE.
+This attestation proves that the response was produced by the attested HTTPS
+endpoint at that time, under a valid TLS session, and that the returned data
+was not fabricated locally by the Provider.
 
 ### Chain Linkage
 
-The key insight is that Step B's request body must contain
-`SHA256(Step A's response data)`:
+TrustLayer becomes powerful when multiple steps are linked together.
+
+Step `B` must include `SHA256(stepA.data[sourceField])` inside its request body.
+That creates a cryptographic dependency between the two steps.
 
 ```
-Step A (data source):
-  data = '{"article_content":"Tesla CEO said..."}'
+Step A:
+  url = "https://api.example.com/source"
+  data = '{"source_value":"abc"}'
   dataHash = SHA256(data) = "abc123..."
 
-Step B (LLM inference):
-  request.body = '{
-    "messages": [{
-      "content": "[source_hash:data_source:abc123...]  ← MUST be here
-                  Tesla CEO said...
-                  Fact check this claim..."
-    }]
-  }'
+Step B:
+  url = "https://api.example.com/transform"
+  request.body contains "[source_hash:step_a:abc123...]"
 ```
 
-On-chain verification confirms:
-1. `SHA256(Step A data) == "abc123..."` ← from Attestation A
-2. `"abc123..." ∈ Step B request body` ← from Attestation B
-3. Both Attestations signed by Primus TEE ← from `verifyAttestation()`
+On-chain verification, if used, checks:
 
-**The chain is broken if the Provider uses different data in the LLM prompt
-than what they actually fetched** — the hashes won't match.
+1. `SHA256(stepA.attestation.data)` is the expected hash anchor
+2. that hash appears inside `stepB.attestation.request[0].body`
+3. both attestations are valid Primus proofs
+
+If the Provider swaps the input, edits the intermediate payload, or calls the
+downstream API with different data, the hash link breaks and verification fails.
+
+---
+
+## Why This Is General
+
+TrustLayer does **not** assume that the second step is an LLM.
+
+Step `B` may be:
+
+- another data API
+- an internal risk/scoring service
+- an LLM endpoint
+- a compliance engine
+- an analytics or simulation API
+
+The only requirement is that the call is made over HTTPS to a domain accepted
+by the TrustLayer policy.
 
 ---
 
 ## Attack Vectors and Defenses
 
-### Attack 1: Fabricate the data source response
-Provider invents a Reuters article that supports their conclusion.
+### Attack 1: Fabricate a source response
 
-**Defense**: Primus Attestor witnesses the actual TLS session with reuters.com.
-The response in the Attestation is exactly what Reuters returned. If the
-Provider didn't hit the real Reuters endpoint, the TLS handshake won't
-produce a valid Attestation.
+The Provider invents a response and claims it came from a real API.
 
-### Attack 2: Tamper with data before sending to LLM
-Provider fetches real Reuters data, then modifies it before including it
-in the LLM prompt.
+**Defense**: The off-chain attestation binds the request, response, and
+timestamp. Local fabrication will fail SDK verification and optional on-chain
+verification.
 
-**Defense**: Chain linkage. `SHA256(verified_reuters_data)` must appear in
-the LLM prompt body. Any modification to the data changes its SHA256, breaking
-the link. The on-chain verifier will reject it.
+### Attack 2: Tamper with intermediate data
 
-### Attack 3: Use a local fake LLM
-Provider runs a local model that always returns favorable verdicts.
+The Provider fetches real data, then modifies it before sending it to the next
+API.
 
-**Defense**: Step B's Attestation proves the HTTPS request went to
-`api.openai.com`. The domain whitelist on-chain rejects any other endpoint.
-The Provider cannot get a valid Attestation for `api.localfake.com`.
+**Defense**: Chain linkage. The downstream request body must contain the hash of
+the upstream verified data. Any modification changes the hash and breaks the
+proof chain.
+
+### Attack 3: Call a fake downstream service
+
+The Provider replaces a trusted downstream API with a local or malicious one.
+
+**Defense**: The attestation proves which HTTPS domain was contacted, and the
+TrustLayer verifier can enforce a trusted domain whitelist when on-chain checks
+are used.
 
 ### Attack 4: Replay an old proof bundle
-Provider reuses a valid proof bundle from a previous job.
 
-**Defense**: Timestamps. Each Attestation embeds the millisecond timestamp
-when it was generated. The on-chain verifier rejects attestations older than
-`maxAttestationAge` (default 10 minutes). A proof bundle must be freshly
-generated for each job.
+The Provider reuses a previously valid bundle.
+
+**Defense**: The verifier checks the attestation timestamp against
+`maxAttestationAge`. Old proofs are rejected.
 
 ### Attack 5: Swap the recipient address
-Provider generates a proof bundle with `recipient = 0xEVIL` and submits it
-for their own job.
 
-**Defense**: The on-chain verifier checks `attestation.recipient == providerAddress`.
-The recipient is set during attestation generation by the Primus SDK — the
-Provider cannot change it after signing.
+The Provider generates a proof for a different wallet and attempts to reuse it.
 
-### Attack 6: Collusion with Primus Attestor
-Provider bribes or hacks a Primus Attestor to sign fake attestations.
+**Defense**: The attestation recipient must match the Provider wallet address
+passed into the verifier.
 
-**Defense**: Primus Attestors run inside Phala Network TEEs (Trusted Execution
-Environments). The attestor code is remotely attested — Phala hardware
-guarantees the correct code is running. Even Primus employees cannot inject
-fraudulent attestations. This is the hardware-level trust anchor of the system.
+### Attack 6: Skip external verification
 
-### Residual Attack: Manipulate the LLM prompt framing
-Provider fetches real data, embeds its hash, but writes a misleading system
-prompt that biases the LLM toward their desired conclusion.
+The Provider generates an attestation but hopes nobody independently verifies
+it.
 
-**Defense**: ❌ **Not fully mitigated.** TrustLayer proves the *data* was
-real and *some* LLM produced the output. It cannot prove the *reasoning* was
-sound. This is the acknowledged residual risk — equivalent to a human analyst
-cherry-picking how to frame their analysis.
+**Defense**: TrustLayer supports two validation modes:
 
-Partial mitigation: expose the full `system prompt` and `user message` in the
-Attestation's `request.body` field. Buyers can inspect the prompting approach
-and decide whether they trust the Provider's methodology.
+- off-chain verification with `verifyAttestation()` in the SDK
+- optional on-chain verification via `TrustLayerVerifier`
+
+ACP integrations that need escrow-level guarantees should use the on-chain path.
+
+### Residual Risk: Correctness of reasoning
+
+TrustLayer proves that:
+
+- a request hit a real HTTPS endpoint
+- a later request depended on earlier verified data
+- the final output came from the attested downstream API
+
+TrustLayer does **not** prove that:
+
+- an LLM's reasoning is correct
+- a model did not hallucinate
+- a business decision built on verified data is logically sound
+
+That residual risk exists for any model or downstream compute service. The proof
+layer establishes provenance, not universal correctness.
 
 ---
 
 ## On-chain Verification Flow
 
 ```
-Buyer calls: TrustLayerVerifier.verifyProofBundle(bundle, providerAddress)
+Optional on-chain path:
+  Buyer or ACP hook calls TrustLayerVerifier.verifyProofBundle(bundle, providerAddress)
 
-For each step i in bundle.steps:
-  1. primus.verifyAttestation(att)         → TEE signature valid
-  2. att.recipient == providerAddress      → correct provider
-  3. extractDomain(att.request[0].url)     → in whitelist
-  4. att.timestamp > now - maxAge          → not stale
-  5. if i > 0:
-       SHA256(steps[i-1].data) ∈ steps[i].request.body  → chain intact
+For each step in bundle.steps:
+  1. primus.verifyAttestation(att)         -> attestation signature valid
+  2. att.recipient == providerAddress      -> correct provider
+  3. extractDomain(att.request[0].url)     -> domain allowed
+  4. att.timestamp within max age window   -> not stale
+  5. if step index > 0:
+       SHA256(prevStep.data) in current request body -> chain intact
 
-After loop:
-  6. rollingKeccak(all taskIds) == bundle.chainHash      → bundle unmodified
-
-Returns: true (or reverts with specific reason)
+After all steps:
+  6. rollingKeccak(all taskIds) == bundle.chainHash  -> bundle unmodified
 ```
+
+`bundle.chainHash` is a rolling `keccak256` over all `taskId`s and must match
+the verifier's computation exactly.
 
 ---
 
-## Primus SDK Mode Selection
+## Primus SDK Integration
 
-| Mode | How It Works | When to Use |
-|---|---|---|
-| `proxytls` | Attestor acts as TLS proxy, records ciphertext, client proves plaintext | Public data sources, no sensitive credentials in request |
-| `mpctls` | Attestor and client co-generate TLS session keys via MPC | Authenticated APIs (OpenAI, Anthropic) where API key in headers must be protected |
+TrustLayer's SDK integration is built around
+`@primuslabs/zktls-core-sdk` and follows the standard flow described in the
+Primus docs:
 
-For Fact Check: use `proxytls` for Reuters/news sources, `mpctls` for LLM APIs.
-The API key in the `Authorization: Bearer sk-...` header is never revealed to
-the Attestor in MPC mode.
+1. `init(appId, appSecret)`
+2. `generateRequestParams(request, responseResolves)`
+3. `setAttMode({ algorithmType })`
+4. `startAttestation(generateRequest)`
+5. `verifyAttestation(attestation)`
+
+Reference: [Primus core-sdk simple example](https://docs.primuslabs.xyz/enterprise/core-sdk/simpleexample)
+
+This is an **enterprise/off-chain** integration pattern.
+TrustLayer does not require the Primus decentralized zkTLS network to generate
+proofs in this mode.
+
+---
+
+## Verification Modes
+
+TrustLayer supports two verification layers:
+
+### Off-chain Verification
+
+This is the default enterprise/core-sdk path.
+
+- the Provider runtime generates the attestation
+- the SDK immediately validates it with `verifyAttestation()`
+- a Buyer or backend service can repeat the same validation off-chain
+
+### On-chain Verification
+
+This is optional and is only needed when you want the blockchain itself to gate
+state transitions such as escrow release.
+
+- `IPrimusZKTLS.verifyAttestation(attestation)` validates the attestation
+- `TrustLayerVerifier` adds bundle-level checks like domain policy, recipient,
+  timestamp freshness, and step linkage
+
+---
+
+## Default TLS Mode
+
+TrustLayer now defaults to **`proxytls`**.
+
+Why:
+
+- it is faster
+- it is easier to use in production ACP flows
+- it is more likely to fit realistic SLA constraints
+
+Use `mpctls` only when you explicitly decide the extra privacy/security is worth
+the latency cost.
+
+Practical rule:
+
+- `proxytls` for most HTTPS APIs, including most provider pipelines
+- `mpctls` only for rare, highly sensitive authenticated calls
 
 ---
 
@@ -191,5 +280,5 @@ the Attestor in MPC mode.
 | `verifyProofBundle` (5 steps) | ~450,000 | ~$0.005 |
 | Full job with bundle submission | ~300,000 | ~$0.003 |
 
-On Base L2, the full verification costs less than $0.01 per job — negligible
-relative to the 0.20 USDC protocol fee.
+On Base L2, full verification is cheap enough to gate escrow without materially
+changing the economics of most ACP jobs.
