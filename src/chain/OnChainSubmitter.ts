@@ -57,16 +57,18 @@ const HOOK_ABI = [
   "function isProviderVerified(address provider, bytes32 chainHash) external view returns (bool)",
 ];
 
+const PRIMUS_ZKTLS_ADDRESS = "0xC02234058caEaA9416506eABf6Ef3122fCA939E8";
+
 export const CONTRACT_ADDRESSES = {
   base_mainnet: {
     TrustLayerVerifier: "",
     TrustLayerACPHook: "",
-    PrimusZKTLS: "",
+    PrimusZKTLS: PRIMUS_ZKTLS_ADDRESS,
   },
   base_sepolia: {
     TrustLayerVerifier: "",
     TrustLayerACPHook: "",
-    PrimusZKTLS: "",
+    PrimusZKTLS: PRIMUS_ZKTLS_ADDRESS,
   },
 } as const;
 

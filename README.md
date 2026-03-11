@@ -243,7 +243,7 @@ See `contracts/policies/` for reference implementations.
 |---|---|
 | TrustLayerVerifier | `pending deployment` |
 | TrustLayerACPHook | `pending deployment` |
-| Primus verifier (Base) | `unconfirmed in this repo` |
+| Primus zkTLS Verifier (Base mainnet & Sepolia) | `0xC02234058caEaA9416506eABf6Ef3122fCA939E8` |
 
 ---
 

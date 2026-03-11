@@ -1,22 +1,12 @@
 const hre = require("hardhat");
 const { ethers } = require("ethers");
 
-function resolveNetworkEnv(networkName, key) {
-  const prefix = networkName === "baseSepolia" ? "BASE_SEPOLIA" : "BASE_MAINNET";
-  return process.env[`${prefix}_${key}`] || process.env[key];
-}
+// Official Primus zkTLS verifier — same address on Base mainnet & Sepolia
+const DEFAULT_PRIMUS_ADDRESS = "0xC02234058caEaA9416506eABf6Ef3122fCA939E8";
 
 async function main() {
-  const primusVerifierAddress = resolveNetworkEnv(
-    hre.network.name,
-    "PRIMUS_VERIFIER_ADDRESS",
-  );
-  if (!primusVerifierAddress) {
-    throw new Error(
-      "PRIMUS_VERIFIER_ADDRESS is required to deploy contracts. " +
-      "You can also set BASE_SEPOLIA_PRIMUS_VERIFIER_ADDRESS or BASE_MAINNET_PRIMUS_VERIFIER_ADDRESS.",
-    );
-  }
+  const primusVerifierAddress =
+    process.env.PRIMUS_VERIFIER_ADDRESS || DEFAULT_PRIMUS_ADDRESS;
   const privateKey = process.env.WALLET_PRIVATE_KEY;
   if (!privateKey) {
     throw new Error("WALLET_PRIVATE_KEY is required to deploy contracts");
