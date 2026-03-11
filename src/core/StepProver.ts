@@ -76,10 +76,11 @@ export class StepProver {
         );
       }
 
-      if (!bodyContainsHash(body, parentFieldValue)) {
+      const parentRawData = parent.attestation.attestation.data;
+      if (!bodyContainsHash(body, parentRawData)) {
         throw new TrustLayerError(
-          `Chain linkage broken: body does not contain SHA256(${parentId}.${sourceField}). ` +
-          `Use buildHashReference() to embed the hash in your bodyBuilder.`,
+          `Chain linkage broken: body does not contain SHA256(${parentId}.attestation.data). ` +
+          `Use buildHashReference() with the parent step's raw attestation data.`,
           TrustLayerErrorCode.CHAIN_LINKAGE_BROKEN,
           config.stepId,
         );

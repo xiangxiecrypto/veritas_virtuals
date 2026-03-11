@@ -67,7 +67,10 @@ export async function buildGenericPipelineDeliverable(
       const resolvedAsset = prev["source_data"].data["asset"];
       const price = prev["source_data"].data["price"];
       const currency = prev["source_data"].data["currency"];
-      const hashRef = buildHashReference("source_data", price);
+      const hashRef = buildHashReference(
+        "source_data",
+        prev["source_data"].attestation.attestation.data,
+      );
 
       return JSON.stringify({
         asset: resolvedAsset,

@@ -19,6 +19,7 @@ export const TRUSTED_DOMAINS = new Set([
   "www.okx.com",
   // ── LLM APIs ─────────────────────────────────
   "api.openai.com",
+  "api.deepseek.com",
   "api.anthropic.com",
   "api.mistral.ai",
   "generativelanguage.googleapis.com",
@@ -62,6 +63,7 @@ export function isTrustedDomain(url: string, whitelist = TRUSTED_DOMAINS): boole
 export function isLLMEndpoint(url: string): boolean {
   const LLM_DOMAINS = new Set([
     "api.openai.com",
+    "api.deepseek.com",
     "api.anthropic.com",
     "api.mistral.ai",
     "generativelanguage.googleapis.com",

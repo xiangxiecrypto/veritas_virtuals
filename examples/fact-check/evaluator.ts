@@ -41,10 +41,10 @@ export async function evaluateDeliverable(deliverableJson: string): Promise<{
   }
 
   // ── Validate chain hash integrity (off-chain) ───────────
-  // Re-derive the expected chain hash from taskIds
+  // Re-derive the expected chain hash from the bundle's Primus task ids
   const { computeChainHash } = await import("../../src/utils/hash.js");
-  const taskIds = bundle.steps.map((s) => s.attestation.taskId);
-  const expectedHash = computeChainHash(taskIds);
+  const primusTaskIds = bundle.steps.map((s) => s.primusTaskId);
+  const expectedHash = computeChainHash(primusTaskIds);
 
   if (expectedHash !== bundle.chainHash) {
     return { accept: false, reason: "Chain hash integrity check failed" };

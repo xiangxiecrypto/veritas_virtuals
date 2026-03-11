@@ -9,17 +9,17 @@ import {
 
 describe("hash utilities", () => {
   it("computes a rolling keccak chain hash", () => {
-    const taskIds = ["task-a", "task-b", "task-c"];
+    const primusTaskIds = ["task-a", "task-b", "task-c"];
 
     let expected = ethers.ZeroHash;
-    for (const taskId of taskIds) {
+    for (const primusTaskId of primusTaskIds) {
       expected = ethers.solidityPackedKeccak256(
         ["bytes32", "string"],
-        [expected, taskId],
+        [expected, primusTaskId],
       );
     }
 
-    expect(computeChainHash(taskIds)).toBe(expected);
+    expect(computeChainHash(primusTaskIds)).toBe(expected);
   });
 
   it("builds and detects hash references", () => {

@@ -1,13 +1,52 @@
 import { ethers } from "ethers";
 import { ProofBundle, OnChainVerificationResult } from "../types/index.js";
 
-// Minimal ABI for TrustLayerVerifier
+// ── ABI fragments matching the official Primus Attestation struct ──
+//
+// On-chain Attestation layout (from IPrimusZKTLS.sol):
+//   struct Attestation {
+//     address recipient;
+//     AttNetworkRequest request;              // single request
+//     AttNetworkResponseResolve[] reponseResolve;  // note: official typo "reponse"
+//     string data;
+//     string attConditions;
+//     uint64 timestamp;
+//     string additionParams;
+//     Attestor[] attestors;
+//     bytes[] signatures;
+//   }
+//
+// On-chain ProofStep layout (from ITrustLayer.sol):
+//   struct ProofStep {
+//     string stepId;
+//     string primusTaskId;
+//     Attestation attestation;
+//   }
+
+const ATTESTATION_TUPLE =
+  "tuple(" +
+    "address recipient, " +
+    "tuple(string url, string header, string method, string body) request, " +
+    "tuple(string keyName, string parseType, string parsePath)[] reponseResolve, " +
+    "string data, " +
+    "string attConditions, " +
+    "uint64 timestamp, " +
+    "string additionParams, " +
+    "tuple(address attestorAddr, string url)[] attestors, " +
+    "bytes[] signatures" +
+  ")";
+
+const PROOF_STEP_TUPLE =
+  `tuple(string stepId, string primusTaskId, ${ATTESTATION_TUPLE} attestation)`;
+
+const PROOF_BUNDLE_TUPLE =
+  `tuple(${PROOF_STEP_TUPLE}[] steps, bytes32 chainHash, address providerWallet, uint256 builtAt)`;
+
 const VERIFIER_ABI = [
-  "function verifyProofBundle(tuple(tuple(string stepId, tuple(tuple(address recipient, tuple(string url, string header, string method, string body)[] request, tuple(tuple(string keyName, string parseType, string parsePath) oneUrlResponseResolve)[][] responseResolve, string data, string attConditions, uint256 timestamp, string additionParams) attestation, address attestor, string signature, string reportTxHash, string taskId, uint256 attestationTime, string attestorUrl) attestation) [] steps, bytes32 chainHash, address providerWallet, uint256 builtAt) calldata bundle, address providerAddress) view returns (bool)",
-  "event TrustLayerVerified(uint256 indexed jobId, address indexed provider, bytes32 chainHash)",
+  `function verifyProofBundle(${PROOF_BUNDLE_TUPLE} bundle, address providerAddress) view returns (bool)`,
+  "event TrustLayerVerified(address indexed provider, bytes32 indexed chainHash, uint256 stepCount, uint256 verifiedAt)",
 ];
 
-// Minimal ABI for TrustLayerACPHook
 const HOOK_ABI = [
   "function verifyDeliverable(uint256 jobId, address providerAddress, bytes calldata encodedBundle) external returns (bool)",
   "function isProviderVerified(address provider, bytes32 chainHash) external view returns (bool)",
@@ -15,29 +54,35 @@ const HOOK_ABI = [
 
 export const CONTRACT_ADDRESSES = {
   base_mainnet: {
-    TrustLayerVerifier: "", // pending deployment
-    TrustLayerACPHook: "", // pending deployment
-    PrimusZKTLS: "", // unconfirmed in repo; inject from deployment/config
+    TrustLayerVerifier: "",
+    TrustLayerACPHook: "",
+    PrimusZKTLS: "",
   },
   base_sepolia: {
-    TrustLayerVerifier: "", // pending deployment
-    TrustLayerACPHook: "", // pending deployment
-    PrimusZKTLS: "", // unconfirmed in repo; inject from deployment/config
+    TrustLayerVerifier: "",
+    TrustLayerACPHook: "",
+    PrimusZKTLS: "",
   },
 } as const;
 
 export type Network = keyof typeof CONTRACT_ADDRESSES;
+export interface ContractAddressOverrides {
+  TrustLayerVerifier?: string;
+  TrustLayerACPHook?: string;
+  PrimusZKTLS?: string;
+}
 
 export class OnChainSubmitter {
   private provider: ethers.JsonRpcProvider;
   private signer: ethers.Wallet;
-  private verifier: ethers.Contract;
-  private hook: ethers.Contract;
+  private verifierAddress?: string;
+  private hookAddress?: string;
 
   constructor(
     privateKey: string,
     network: Network = "base_mainnet",
     rpcUrl?: string,
+    overrides?: ContractAddressOverrides,
   ) {
     const rpc = rpcUrl ?? (network === "base_mainnet"
       ? "https://mainnet.base.org"
@@ -46,29 +91,21 @@ export class OnChainSubmitter {
     this.provider = new ethers.JsonRpcProvider(rpc);
     this.signer = new ethers.Wallet(privateKey, this.provider);
 
-    const addresses = CONTRACT_ADDRESSES[network];
-    this.verifier = new ethers.Contract(
-      addresses.TrustLayerVerifier,
-      VERIFIER_ABI,
-      this.signer,
-    );
-    this.hook = new ethers.Contract(
-      addresses.TrustLayerACPHook,
-      HOOK_ABI,
-      this.signer,
-    );
+    const addresses = { ...CONTRACT_ADDRESSES[network], ...overrides };
+    this.verifierAddress = addresses.TrustLayerVerifier || undefined;
+    this.hookAddress = addresses.TrustLayerACPHook || undefined;
   }
 
   /**
    * Dry-run verify a ProofBundle using eth_call (no gas).
-   * Use this in the Buyer's onEvaluate to check before signing.
    */
   async verifyBundle(
     bundle: ProofBundle,
     providerAddress: string,
   ): Promise<OnChainVerificationResult> {
     try {
-      const result: boolean = await this.verifier.verifyProofBundle(
+      const verifier = this.getVerifierContract();
+      const result: boolean = await verifier.verifyProofBundle(
         this.encodeBundle(bundle),
         providerAddress,
       );
@@ -80,7 +117,6 @@ export class OnChainSubmitter {
 
   /**
    * Submit the ProofBundle to the ACP hook contract (gas required).
-   * In production, ACP Job contracts call the hook during evaluation.
    */
   async submitBundle(
     jobId: number | bigint,
@@ -88,8 +124,9 @@ export class OnChainSubmitter {
     providerAddress: string,
   ): Promise<OnChainVerificationResult> {
     try {
+      const hook = this.getHookContract();
       const encoded = this.encodeBundleForHook(bundle);
-      const tx = await this.hook.verifyDeliverable(jobId, providerAddress, encoded);
+      const tx = await hook.verifyDeliverable(jobId, providerAddress, encoded);
       const receipt = await tx.wait();
       return { verified: true, txHash: receipt.hash };
     } catch (err: any) {
@@ -104,19 +141,73 @@ export class OnChainSubmitter {
     providerAddress: string,
     chainHash: string,
   ): Promise<boolean> {
-    return this.hook.isProviderVerified(
-      providerAddress,
-      chainHash,
-    );
+    const hook = this.getHookContract();
+    return hook.isProviderVerified(providerAddress, chainHash);
   }
 
+  private getVerifierContract(): ethers.Contract {
+    if (!this.verifierAddress) {
+      throw new Error(
+        "TrustLayerVerifier address is not configured. Pass it via OnChainSubmitter overrides or deployment config.",
+      );
+    }
+    return new ethers.Contract(this.verifierAddress, VERIFIER_ABI, this.signer);
+  }
+
+  private getHookContract(): ethers.Contract {
+    if (!this.hookAddress) {
+      throw new Error(
+        "TrustLayerACPHook address is not configured. Pass it via OnChainSubmitter overrides or deployment config.",
+      );
+    }
+    return new ethers.Contract(this.hookAddress, HOOK_ABI, this.signer);
+  }
+
+  /**
+   * Convert SDK ProofBundle → on-chain struct layout.
+   *
+   * Key mapping:
+   *  - ProofStep.primusTaskId → on-chain ProofStep.primusTaskId
+   *  - ProofStep.attestation.{attestor, attestorUrl} → Attestation.attestors[0]
+   *  - ProofStep.attestation.signature → Attestation.signatures[0]
+   *  - PrimusAttestation.request (single) → AttNetworkRequest
+   *  - PrimusAttestation.responseResolve → reponseResolve (official typo)
+   */
   private encodeBundle(bundle: ProofBundle): any {
-    // Transforms ProofBundle to match Solidity struct layout
     return {
-      steps: bundle.steps.map((s) => ({
-        stepId: s.stepId,
-        attestation: s.attestation,
-      })),
+      steps: bundle.steps.map((s) => {
+        const att = s.attestation;
+        const core = att.attestation;
+        return {
+          stepId: s.stepId,
+          primusTaskId: s.primusTaskId,
+          attestation: {
+            recipient: core.recipient,
+            request: {
+              url: core.request.url,
+              header: typeof core.request.header === "string"
+                ? core.request.header
+                : JSON.stringify(core.request.header),
+              method: core.request.method,
+              body: core.request.body,
+            },
+            reponseResolve: core.responseResolve.map((r) => ({
+              keyName: r.keyName,
+              parseType: r.parseType,
+              parsePath: r.parsePath,
+            })),
+            data: core.data,
+            attConditions: core.attConditions,
+            timestamp: BigInt(core.timestamp),
+            additionParams: core.additionParams,
+            attestors: [{
+              attestorAddr: att.attestor,
+              url: att.attestorUrl,
+            }],
+            signatures: [att.signature],
+          },
+        };
+      }),
       chainHash: bundle.chainHash,
       providerWallet: bundle.providerWallet,
       builtAt: BigInt(bundle.builtAt),
@@ -124,21 +215,7 @@ export class OnChainSubmitter {
   }
 
   private encodeBundleForHook(bundle: ProofBundle): string {
-    // Solidity: abi.decode(encodedBundle, (ITrustLayer.ProofBundle))
-    // Therefore the hook expects `abi.encode(ProofBundle)`.
     const abi = ethers.AbiCoder.defaultAbiCoder();
-    const tupleType =
-      "tuple(" +
-      "tuple(string stepId, " +
-      "tuple(" +
-      "tuple(address recipient, tuple(string url, string header, string method, string body)[] request, tuple(tuple(string keyName, string parseType, string parsePath) oneUrlResponseResolve)[][] responseResolve, string data, string attConditions, uint256 timestamp, string additionParams) attestation, " +
-      "address attestor, string signature, string reportTxHash, string taskId, uint256 attestationTime, string attestorUrl" +
-      ")" +
-      " attestation" +
-      ")[] steps, " +
-      "bytes32 chainHash, address providerWallet, uint256 builtAt" +
-      ")";
-
-    return abi.encode([tupleType], [this.encodeBundle(bundle)]);
+    return abi.encode([PROOF_BUNDLE_TUPLE], [this.encodeBundle(bundle)]);
   }
 }

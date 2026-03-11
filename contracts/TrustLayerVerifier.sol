@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
-import { IPrimusZKTLS } from "./interfaces/IPrimusZKTLS.sol";
+import { IPrimusZKTLS, Attestation } from "./interfaces/IPrimusZKTLS.sol";
 import { ITrustLayer } from "./interfaces/ITrustLayer.sol";
 import { ProofParser } from "./libraries/ProofParser.sol";
 
@@ -14,6 +14,9 @@ import { ProofParser } from "./libraries/ProofParser.sol";
  *  1. Actually fetched data from a trusted real-world HTTPS endpoint
  *  2. Fed that exact data (by hash) into a downstream HTTPS API
  *  3. The Deliverable Memo reflects the true downstream API output
+ *
+ * The Attestation struct matches the official Primus zkTLS contract:
+ * https://github.com/primus-labs/zktls-contracts/blob/main/src/IPrimusZKTLS.sol
  *
  * Proof generation happens off-chain through the Primus core-sdk package.
  * This contract is only responsible for optional on-chain verification of the
@@ -42,7 +45,6 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
         primus = IPrimusZKTLS(primusAddress);
         maxAttestationAge = _maxAttestationAge;
 
-        // Seed the trusted domain whitelist
         _addDomain("reuters.com");
         _addDomain("apnews.com");
         _addDomain("sec.gov");
@@ -55,6 +57,7 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
         _addDomain("api.coinbase.com");
         _addDomain("www.okx.com");
         _addDomain("api.openai.com");
+        _addDomain("api.deepseek.com");
         _addDomain("api.anthropic.com");
         _addDomain("api.mistral.ai");
         _addDomain("generativelanguage.googleapis.com");
@@ -79,32 +82,32 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
 
         for (uint256 i = 0; i < bundle.steps.length; i++) {
             ProofStep calldata step = bundle.steps[i];
-            IPrimusZKTLS.Attestation calldata att = step.attestation;
+            Attestation calldata att = step.attestation;
 
-        // ── Check 1: Primus attestation signature ──────────
-            // Reverts internally if invalid
+            // ── Check 1: Primus attestation signature ──────────
             primus.verifyAttestation(att);
 
             // ── Check 2: recipient == provider wallet ──────────
             require(
-                att.attestation.recipient == providerAddress,
+                att.recipient == providerAddress,
                 "TrustLayer: recipient mismatch"
             );
 
             // ── Check 3: URL domain in whitelist ───────────────
-            require(att.attestation.request.length > 0, "TrustLayer: empty request");
-            string memory domain = ProofParser.extractDomain(
-                att.attestation.request[0].url
+            require(
+                bytes(att.request.url).length > 0,
+                "TrustLayer: empty request URL"
             );
+            string memory domain = ProofParser.extractDomain(att.request.url);
             require(
                 _trustedDomains[keccak256(bytes(domain))],
                 string(abi.encodePacked("TrustLayer: untrusted domain: ", domain))
             );
 
             // ── Check 4: timestamp within SLA window ───────────
-            // attestation.timestamp is in milliseconds
-            uint256 attestationAgeMs = block.timestamp * 1000 > att.attestation.timestamp
-                ? block.timestamp * 1000 - att.attestation.timestamp
+            uint256 attTimestamp = uint256(att.timestamp);
+            uint256 attestationAgeMs = block.timestamp * 1000 > attTimestamp
+                ? block.timestamp * 1000 - attTimestamp
                 : 0;
             require(
                 attestationAgeMs <= maxAttestationAge * 1000,
@@ -112,12 +115,10 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
             );
 
             // ── Check 5: chain linkage ─────────────────────────
-            // Each step (after the first) must reference the previous
-            // step's data hash inside its request body.
             if (i > 0) {
-                string memory prevData = bundle.steps[i - 1].attestation.attestation.data;
+                string memory prevData = bundle.steps[i - 1].attestation.data;
                 bytes32 prevDataHash = sha256(bytes(prevData));
-                string memory reqBody = att.attestation.request[0].body;
+                string memory reqBody = att.request.body;
 
                 require(
                     ProofParser.containsHash(reqBody, prevDataHash),
@@ -128,13 +129,14 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
             }
 
             // ── Accumulate chain hash ──────────────────────────
+            // Uses the Primus task identifier carried alongside each step,
+            // not a field inside the Primus Attestation struct itself.
             rollingHash = keccak256(
-                abi.encodePacked(rollingHash, att.taskId)
+                abi.encodePacked(rollingHash, step.primusTaskId)
             );
         }
 
         // ── Check 6: bundle chain hash integrity ───────────────
-        // The SDK computes the same rolling keccak256 chain hash off-chain.
         require(
             rollingHash == bundle.chainHash,
             "TrustLayer: chain hash mismatch"
@@ -177,7 +179,6 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
 
     function _isDomainTrusted(string memory domain) internal view returns (bool) {
         if (_trustedDomains[keccak256(bytes(domain))]) return true;
-        // Subdomain fallback: "api.openai.com" → check "openai.com"
         bytes memory b = bytes(domain);
         for (uint i = 0; i < b.length; i++) {
             if (b[i] == ".") {

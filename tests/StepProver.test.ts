@@ -9,7 +9,7 @@ function makeAttestationResult(data: string) {
   return {
     attestation: {
       recipient: providerWallet,
-      request: [],
+      request: { url: "", header: "{}", method: "GET", body: "" },
       responseResolve: [],
       data,
       attConditions: "{}",
@@ -71,12 +71,13 @@ describe("StepProver", () => {
       { trustedDomains: ["api.service.example.com"] },
     );
 
+    const sourceRawData = JSON.stringify({ price: "100" });
     const prevSteps: Record<string, StepResult> = {
       source_data: {
         stepId: "source_data",
         data: { price: "100" },
         dataHash: "ignored",
-        attestation: makeAttestationResult(JSON.stringify({ price: "100" })),
+        attestation: makeAttestationResult(sourceRawData),
         executedAt: Date.now(),
       },
     };
@@ -115,12 +116,13 @@ describe("StepProver", () => {
     );
 
     const price = "100";
+    const sourceRawData = JSON.stringify({ price });
     const prevSteps: Record<string, StepResult> = {
       source_data: {
         stepId: "source_data",
         data: { price },
         dataHash: "ignored",
-        attestation: makeAttestationResult(JSON.stringify({ price })),
+        attestation: makeAttestationResult(sourceRawData),
         executedAt: Date.now(),
       },
     };
@@ -131,7 +133,7 @@ describe("StepProver", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        evidence: buildHashReference("source_data", price),
+        evidence: buildHashReference("source_data", sourceRawData),
       }),
       responseResolves: [
         { keyName: "score", parseType: "json", parsePath: "$.score" },

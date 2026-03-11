@@ -88,7 +88,7 @@ Step B:
 On-chain verification, if used, checks:
 
 1. `SHA256(stepA.attestation.data)` is the expected hash anchor
-2. that hash appears inside `stepB.attestation.request[0].body`
+2. that hash appears inside `stepB.attestation.request.body`
 3. both attestations are valid Primus proofs
 
 If the Provider swaps the input, edits the intermediate payload, or calls the
@@ -194,17 +194,19 @@ Optional on-chain path:
 For each step in bundle.steps:
   1. primus.verifyAttestation(att)         -> attestation signature valid
   2. att.recipient == providerAddress      -> correct provider
-  3. extractDomain(att.request[0].url)     -> domain allowed
+  3. extractDomain(att.request.url)        -> domain allowed
   4. att.timestamp within max age window   -> not stale
   5. if step index > 0:
        SHA256(prevStep.data) in current request body -> chain intact
 
 After all steps:
-  6. rollingKeccak(all taskIds) == bundle.chainHash  -> bundle unmodified
+  6. rollingKeccak(all step.primusTaskId values) == bundle.chainHash  -> bundle unmodified
 ```
 
-`bundle.chainHash` is a rolling `keccak256` over all `taskId`s and must match
-the verifier's computation exactly.
+`bundle.chainHash` is a rolling `keccak256` over all `step.primusTaskId`
+values and must match the verifier's computation exactly. These ids come from
+the Primus SDK result and are carried by TrustLayer at the step level; they are
+not fields inside the official Primus on-chain `Attestation` struct.
 
 ---
 

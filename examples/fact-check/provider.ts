@@ -140,11 +140,15 @@ async function executeFactCheck(job: any): Promise<void> {
       "Content-Type": "application/json",
     },
     // bodyBuilder receives results of previous steps.
-    // CRITICAL: the hash reference embeds SHA256(articleContent)
-    // into the prompt, creating the cryptographic chain linkage.
+    // CRITICAL: the hash reference embeds SHA256(previous attestation data)
+    // into the prompt, creating the cryptographic chain linkage that the
+    // on-chain verifier can reproduce exactly.
     bodyBuilder: (prevSteps) => {
       const content = prevSteps["data_source"].data["article_content"];
-      const hashRef = buildHashReference("data_source", content);
+      const hashRef = buildHashReference(
+        "data_source",
+        prevSteps["data_source"].attestation.attestation.data,
+      );
 
       return JSON.stringify({
         model: "gpt-4o",
@@ -204,7 +208,7 @@ async function executeFactCheck(job: any): Promise<void> {
     ],
     dependsOn: {
       stepId: "data_source",
-      sourceField: "article_content",  // Enforces: SHA256(content) ∈ LLM prompt
+      sourceField: "article_content",  // Validates the app-level dependency
     },
   });
 
@@ -222,7 +226,7 @@ async function executeFactCheck(job: any): Promise<void> {
     sources: [
       {
         title: articleTitle,
-        url: dataSourceResult.attestation.attestation.request[0].url,
+        url: dataSourceResult.attestation.attestation.request.url,
         verified_at: dataSourceResult.attestation.attestation.timestamp,
       },
     ],

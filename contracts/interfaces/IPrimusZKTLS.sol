@@ -3,55 +3,46 @@ pragma solidity ^0.8.20;
 
 /**
  * @title IPrimusZKTLS
- * @notice Interface for the Primus attestation verifier contract used by
- * enterprise/core-sdk attestation consumers.
+ * @notice Interface for the Primus zkTLS on-chain attestation verifier.
  *
- * TrustLayer uses the Primus core-sdk package to generate attestations
- * off-chain. This contract is only used when a caller wants to verify the
- * resulting attestation on-chain as an additional guarantee.
+ * Matches the official contract at:
+ * https://github.com/primus-labs/zktls-contracts/blob/main/src/IPrimusZKTLS.sol
+ *
+ * Proof generation happens off-chain through the Primus core-sdk package.
+ * This contract is only used when a caller wants to verify the resulting
+ * attestation on-chain as an additional guarantee.
  */
+
+struct Attestation {
+    address recipient;
+    AttNetworkRequest request;
+    AttNetworkResponseResolve[] reponseResolve;
+    string data;
+    string attConditions;
+    uint64 timestamp;
+    string additionParams;
+    Attestor[] attestors;
+    bytes[] signatures;
+}
+
+struct AttNetworkRequest {
+    string url;
+    string header;
+    string method;
+    string body;
+}
+
+struct AttNetworkResponseResolve {
+    string keyName;
+    string parseType;
+    string parsePath;
+}
+
+struct Attestor {
+    address attestorAddr;
+    string url;
+}
+
 interface IPrimusZKTLS {
-    struct AttestationRequest {
-        string url;
-        string header;
-        string method;
-        string body;
-    }
-
-    struct ResponseResolveItem {
-        string keyName;
-        string parseType;
-        string parsePath;
-    }
-
-    struct ResponseResolve {
-        ResponseResolveItem[] oneUrlResponseResolve;
-    }
-
-    struct AttestationCore {
-        address recipient;
-        AttestationRequest[] request;
-        ResponseResolve[] responseResolve;
-        string data;
-        string attConditions;
-        uint256 timestamp;
-        string additionParams;
-    }
-
-    struct Attestation {
-        AttestationCore attestation;
-        address attestor;
-        string signature;
-        string reportTxHash;
-        string taskId;
-        uint256 attestationTime;
-        string attestorUrl;
-    }
-
-    /**
-     * @notice Verify a zkTLS attestation on-chain.
-     * Reverts if the attestation is invalid.
-     * @param attestation The full attestation struct
-     */
     function verifyAttestation(Attestation calldata attestation) external view;
 }

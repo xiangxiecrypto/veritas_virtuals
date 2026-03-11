@@ -140,11 +140,12 @@ export class ProofChainBuilder {
 
     const steps = this.stepConfigs.map((config) => ({
       stepId: config.stepId,
+      primusTaskId: this.stepResults[config.stepId].attestation.taskId,
       attestation: this.stepResults[config.stepId].attestation,
     }));
 
-    const taskIds = steps.map((s) => s.attestation.taskId);
-    const chainHash = computeChainHash(taskIds);
+    const primusTaskIds = steps.map((s) => s.primusTaskId);
+    const chainHash = computeChainHash(primusTaskIds);
 
     return {
       version: "1.0",

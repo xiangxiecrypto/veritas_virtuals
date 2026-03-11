@@ -47,7 +47,7 @@ TrustLayer fixes this at the **cryptographic layer**, not at the reputation laye
                             │ TLS session witnessing
 ┌───────────────────────────▼──────────────────────────────────┐
 │  Layer 1: External APIs                                      │
-│  reuters.com / sec.gov / api.openai.com / api.anthropic.com  │
+│  reuters.com / sec.gov / api.openai.com / api.deepseek.com / api.anthropic.com │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -57,7 +57,7 @@ TrustLayer fixes this at the **cryptographic layer**, not at the reputation laye
 |---|---|
 | Provider fabricates data source | Attestation_1 cryptographically proves HTTP response came from a real domain |
 | Provider tampers data before sending to LLM | Attestation_2 body must contain SHA256(Attestation_1.data) — tampering breaks the hash |
-| Provider uses a local fake LLM | Attestation_2 proves request was sent to `api.openai.com`, domain whitelist enforced on-chain |
+| Provider uses a local fake LLM | Attestation_2 proves request was sent to a trusted inference API such as `api.openai.com` or `api.deepseek.com`, domain whitelist enforced on-chain |
 | Provider replays an old proof | Timestamp check: attestation must be within the Job SLA window |
 | Provider forges an attestation locally | SDK/off-chain verification and optional on-chain verification both reject invalid attestations |
 | Provider swaps recipient address | Contract verifies `recipient == provider wallet address` |
@@ -142,9 +142,9 @@ await builder.addStep({
 // Step 2: Prove you called a real downstream HTTPS API (often an LLM) with that exact data
 await builder.addStep({
   stepId: "downstream_call",
-  url: "https://api.openai.com/v1/chat/completions",
+  url: "https://api.deepseek.com/chat/completions",
   method: "POST",
-  headers: { "Authorization": `Bearer ${process.env.OPENAI_KEY}` },
+  headers: { "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}` },
   bodyBuilder: (prevSteps) => {
     const content = prevSteps["data_source"].data["article_content"];
     return JSON.stringify({
@@ -205,7 +205,7 @@ The on-chain verifier enforces that all attested URLs belong to a whitelist of t
 
 **Data Sources:** `reuters.com`, `apnews.com`, `sec.gov`, `coindesk.com`, `coingecko.com`, `api.coingecko.com`, `finance.yahoo.com`
 
-**LLM APIs:** `api.openai.com`, `api.anthropic.com`, `api.mistral.ai`, `generativelanguage.googleapis.com`
+**LLM APIs:** `api.openai.com`, `api.deepseek.com`, `api.anthropic.com`, `api.mistral.ai`, `generativelanguage.googleapis.com`
 
 Whitelist governance is managed by the contract owner (Phase 1), with plans for decentralized staking-based governance in Phase 4.
 

@@ -2,42 +2,66 @@
 //  TrustLayer — Core Types
 // ─────────────────────────────────────────────────────────────
 
-// ── Primus SDK types (mirrored from @primuslabs/zktls-core-sdk / attestation shape) ──
+// ── Primus SDK types ──
+//
+// These mirror the on-chain struct layout from the official Primus contract:
+// https://github.com/primus-labs/zktls-contracts/blob/main/src/IPrimusZKTLS.sol
+//
+// The on-chain Attestation struct includes attestors[] and signatures[].
+// The SDK returns attestor/signature at the outer level of the result,
+// so we split into PrimusAttestation (inner) and PrimusAttestationResult (outer).
 
 export interface PrimusRequest {
   url: string;
-  method: "GET" | "POST" | "PUT" | "DELETE";
-  header: Record<string, string>;
+  header: string;   // JSON string of request headers
+  method: string;
   body: string;
 }
 
 export interface PrimusResponseResolve {
   keyName: string;
-  parseType: "json" | "html" | "text";
+  parseType: string;
   parsePath: string;
-  // Optional: apply zkTLS operation instead of revealing raw value
-  op?: "SHA256" | "SHA256_EX" | ">" | "<" | "=" | "!=" | ">=" | "<=";
+  op?: string;
   value?: string;
 }
 
-export interface PrimusAttestation {
-  recipient: string;           // Provider wallet address
-  request: PrimusRequest[];
-  responseResolve: PrimusResponseResolve[][];
-  data: string;                // JSON string of verified extracted data
-  attConditions: string;       // JSON string of conditions
-  timestamp: number;           // Unix ms
-  additionParams: string;      // JSON string: { algorithmType }
+export interface PrimusAttestor {
+  attestorAddr: string;
+  url: string;
 }
 
+/**
+ * Core attestation body as returned by the Primus core-sdk.
+ *
+ * On-chain, this maps to the inner fields of the Attestation struct
+ * (without attestors[] / signatures[] which live at the outer level
+ * in the on-chain struct and at the outer PrimusAttestationResult in the SDK).
+ */
+export interface PrimusAttestation {
+  recipient: string;
+  request: PrimusRequest;
+  responseResolve: PrimusResponseResolve[];
+  data: string;
+  attConditions: string;
+  timestamp: number;        // uint64 on-chain, Unix ms
+  additionParams: string;
+}
+
+/**
+ * Full SDK-level attestation result returned by PrimusCoreTLS.startAttestation().
+ *
+ * For on-chain submission, OnChainSubmitter assembles these fields into
+ * the official Attestation struct (with attestors[] and signatures[]).
+ */
 export interface PrimusAttestationResult {
   attestation: PrimusAttestation;
-  attestor: string;            // Attestation signer / verifier-side identifier
-  signature: string;           // ECDSA signature over attestation
-  reportTxHash: string;        // On-chain report tx
-  taskId: string;              // Unique task identifier
-  attestationTime: number;     // Time taken in ms
-  attestorUrl: string;         // Verifier/attestation service URL
+  attestor: string;            // Attestor address (goes into attestors[0].attestorAddr)
+  signature: string;           // ECDSA signature (goes into signatures[0])
+  reportTxHash: string;
+  taskId: string;              // Primus SDK task identifier, not part of the on-chain Attestation struct
+  attestationTime: number;     // Duration in ms
+  attestorUrl: string;         // Attestor service URL (goes into attestors[0].url)
 }
 
 // ── TrustLayer Step Config ──────────────────────────────────
@@ -74,8 +98,10 @@ export interface StepConfig {
 
   /**
    * If set, TrustLayer will verify that this step's request body
-   * contains SHA256(prevStep.data[sourceField]) before attesting.
-   * This creates the cryptographic chain linkage.
+   * contains SHA256(prevStep.attestation.data) before attesting.
+   * This creates the cryptographic chain linkage that can also be checked
+   * by the on-chain verifier. `sourceField` is still useful for validating
+   * the application-level dependency and for building the downstream request.
    */
   dependsOn?: {
     stepId: string;
@@ -101,6 +127,12 @@ export interface StepResult {
 
 export interface ProofStep {
   stepId: string;
+  /**
+   * Primus SDK task identifier copied out of `PrimusAttestationResult.taskId`.
+   * Kept at the TrustLayer step level to avoid implying it belongs to the
+   * official Primus on-chain Attestation struct.
+   */
+  primusTaskId: string;
   attestation: PrimusAttestationResult;
 }
 
@@ -112,7 +144,7 @@ export interface ProofBundle {
   /** Ordered list of proven steps */
   steps: ProofStep[];
   /**
-   * keccak256 of all taskIds concatenated — used on-chain
+   * keccak256 of all `primusTaskId` values concatenated — used on-chain
    * to verify the bundle hasn't been tampered with
    */
   chainHash: string;

@@ -7,7 +7,7 @@ export { StepProver } from "./core/StepProver.js";
 
 // Chain
 export { OnChainSubmitter, CONTRACT_ADDRESSES } from "./chain/OnChainSubmitter.js";
-export type { Network } from "./chain/OnChainSubmitter.js";
+export type { Network, ContractAddressOverrides } from "./chain/OnChainSubmitter.js";
 
 // Types
 export type {
@@ -18,6 +18,7 @@ export type {
   ProofChainBuilderConfig,
   PrimusAttestationResult,
   PrimusAttestation,
+  PrimusAttestor,
   PrimusRequest,
   PrimusResponseResolve,
   AttestationMode,

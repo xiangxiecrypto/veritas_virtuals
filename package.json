@@ -15,10 +15,11 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "test:contracts": "npm run build && node scripts/test-live-verifier.mjs",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
     "compile:contracts": "hardhat compile",
-    "deploy:contracts": "hardhat run scripts/deploy.cjs --network base"
+    "deploy:contracts": "hardhat run scripts/deploy.cjs --network baseSepolia"
   },
   "keywords": [
     "zktls",

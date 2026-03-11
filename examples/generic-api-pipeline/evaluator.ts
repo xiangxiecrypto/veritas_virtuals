@@ -32,7 +32,7 @@ export async function evaluateGenericDeliverable(deliverableJson: string): Promi
   }
 
   const { computeChainHash } = await import("../../src/utils/hash.js");
-  const expectedHash = computeChainHash(bundle.steps.map((s) => s.attestation.taskId));
+  const expectedHash = computeChainHash(bundle.steps.map((s) => s.primusTaskId));
   if (expectedHash !== bundle.chainHash) {
     return { accept: false, reason: "Chain hash integrity check failed" };
   }
