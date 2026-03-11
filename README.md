@@ -276,10 +276,9 @@ comfortable with the additional latency.
 
 | Phase | Description |
 |---|---|
-| **Phase 1** (Now) | TrustLayer SDK ships. Providers opt-in. Verified providers get badge on agdp.io |
-| **Phase 2** | agdp.io adds `trustLayerEnabled` filter. Buyers can filter for verified providers |
-| **Phase 3** | ACP Job contract upgrade: `trustLayerEnabled` providers must pass proof verification. Evaluators deploy `IEvaluatorPolicy` contracts for fully automated escrow gating |
-| **Phase 4** | Governance decentralized via staking |
+| **Phase 1** (Now) | TrustLayer SDK + contracts deployed independently. Providers opt-in by calling `registerProvider()`. No changes to ACP contracts required |
+| **Phase 2** | Evaluators deploy `IEvaluatorPolicy` contracts and call `setPolicy()`. Verification is fully automated on-chain — proof authenticity + business rules enforced in a single tx |
+| **Phase 3** | Ecosystem adoption: more evaluator policies, more providers, community-contributed policy templates |
 
 ---
 
