@@ -53,7 +53,7 @@ TrustLayer fixes this at the **cryptographic layer**, not at the reputation laye
                             │ TLS session witnessing
 ┌───────────────────────────▼──────────────────────────────────┐
 │  Layer 1: External APIs                                      │
-│  reuters.com / sec.gov / api.openai.com / api.deepseek.com / api.anthropic.com │
+│  reuters.com / sec.gov / api.openai.com / api.z.ai / api.anthropic.com │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -148,13 +148,13 @@ await builder.addStep({
 // Step 2: Prove you called a real downstream HTTPS API (often an LLM) with that exact data
 await builder.addStep({
   stepId: "downstream_call",
-  url: "https://api.deepseek.com/chat/completions",
+  url: "https://api.z.ai/api/paas/v4/chat/completions",
   method: "POST",
-  headers: { "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}` },
+  headers: { "Authorization": `Bearer ${process.env.ZAI_API_KEY}` },
   bodyBuilder: (prevSteps) => {
     const content = prevSteps["data_source"].data["article_content"];
     return JSON.stringify({
-      model: "gpt-4o",
+      model: "glm-5",
       messages: [{
         role: "user",
         // Embed SHA256(content) in the body — creates cryptographic linkage

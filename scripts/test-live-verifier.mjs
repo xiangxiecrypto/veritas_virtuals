@@ -29,11 +29,11 @@ async function main() {
       ? process.env.BASE_RPC_URL
       : process.env.BASE_SEPOLIA_RPC_URL);
 
-  const deepseekApiKey =
-    process.env.DEEPSEEK_API_KEY ??
-    process.env.OPENAI_API_KEY;
-  if (!deepseekApiKey) {
-    throw new Error("DEEPSEEK_API_KEY is required");
+  const zaiApiKey =
+    process.env.ZAI_API_KEY ??
+    process.env.GLM_API_KEY;
+  if (!zaiApiKey) {
+    throw new Error("ZAI_API_KEY is required");
   }
 
   const trustLayerVerifierAddress = resolveNetworkEnv(
@@ -68,11 +68,11 @@ async function main() {
 
   console.log("[live-test] Step 2: generating downstream attestation...");
   const llmStep = await builder.addStep({
-    stepId: "deepseek_inference",
-    url: "https://api.deepseek.com/chat/completions",
+    stepId: "glm_inference",
+    url: "https://api.z.ai/api/paas/v4/chat/completions",
     method: "POST",
     headers: {
-      Authorization: `Bearer ${deepseekApiKey}`,
+      Authorization: `Bearer ${zaiApiKey}`,
       "Content-Type": "application/json",
     },
     bodyBuilder: (prev) => {
@@ -82,7 +82,7 @@ async function main() {
       const currency = prev["source_data"].data["currency"];
 
       return JSON.stringify({
-        model: process.env.DEEPSEEK_MODEL ?? "deepseek-chat",
+        model: process.env.ZAI_MODEL ?? "glm-5",
         response_format: { type: "json_object" },
         messages: [
           {
