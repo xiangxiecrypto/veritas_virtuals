@@ -18,7 +18,7 @@
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
     "compile:contracts": "hardhat compile",
-    "deploy:contracts": "hardhat run scripts/deploy.ts --network base"
+    "deploy:contracts": "hardhat run scripts/deploy.cjs --network base"
   },
   "keywords": [
     "zktls",

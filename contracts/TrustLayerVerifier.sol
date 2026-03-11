@@ -15,7 +15,7 @@ import { ProofParser } from "./libraries/ProofParser.sol";
  *  2. Fed that exact data (by hash) into a downstream HTTPS API
  *  3. The Deliverable Memo reflects the true downstream API output
  *
- * Proof generation happens off-chain through `@primuslabs/zktls-core-sdk`.
+ * Proof generation happens off-chain through the Primus core-sdk package.
  * This contract is only responsible for optional on-chain verification of the
  * resulting attestation bundle.
  */

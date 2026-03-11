@@ -6,7 +6,7 @@ pragma solidity ^0.8.20;
  * @notice Interface for the Primus attestation verifier contract used by
  * enterprise/core-sdk attestation consumers.
  *
- * TrustLayer uses `@primuslabs/zktls-core-sdk` to generate attestations
+ * TrustLayer uses the Primus core-sdk package to generate attestations
  * off-chain. This contract is only used when a caller wants to verify the
  * resulting attestation on-chain as an additional guarantee.
  */
