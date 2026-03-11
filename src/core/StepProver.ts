@@ -6,13 +6,13 @@ import {
   TrustLayerErrorCode,
 } from "../types/index.js";
 import { sha256, bodyContainsHash } from "../utils/hash.js";
-import { isTrustedDomain, TRUSTED_DOMAINS } from "../utils/domain.js";
+import { isTrustedDomain } from "../utils/domain.js";
 
 /**
  * StepProver handles the execution of a single proof step.
  *
  * Responsibilities:
- *  1. Validate the target URL against the trusted domain whitelist
+ *  1. Optional off-chain domain check (if trustedDomains provided)
  *  2. Enforce chain linkage: if dependsOn is set, verify the body
  *     contains SHA256(parentStep.data[sourceField])
  *  3. Execute the Primus core-sdk attestation flow off-chain
@@ -20,15 +20,15 @@ import { isTrustedDomain, TRUSTED_DOMAINS } from "../utils/domain.js";
  *  5. Return a StepResult with parsed data and dataHash
  */
 export class StepProver {
-  // PrimusCoreTLS instance is injected — typed as any because
-  // @primuslabs/zktls-core-sdk ships CommonJS without stable .d.ts
-  private readonly trustedDomains: Set<string>;
+  private readonly trustedDomains?: Set<string>;
 
   constructor(
     private readonly primusCore: any,
     opts?: { trustedDomains?: Iterable<string> },
   ) {
-    this.trustedDomains = new Set(opts?.trustedDomains ?? TRUSTED_DOMAINS);
+    this.trustedDomains = opts?.trustedDomains
+      ? new Set(opts.trustedDomains)
+      : undefined;
   }
 
   async prove(
@@ -147,7 +147,7 @@ export class StepProver {
       );
     }
 
-    // ── 8. Validate recipient matches provider wallet ────────
+    // ── 6. Validate recipient matches provider wallet ────────
     if (
       attestResult.attestation.recipient.toLowerCase() !==
       providerWallet.toLowerCase()
@@ -159,7 +159,7 @@ export class StepProver {
       );
     }
 
-    // ── 9. Parse extracted data ──────────────────────────────
+    // ── 7. Parse extracted data ──────────────────────────────
     let parsedData: Record<string, string> = {};
     try {
       parsedData = JSON.parse(attestResult.attestation.data);

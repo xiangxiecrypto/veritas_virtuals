@@ -19,7 +19,8 @@
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
     "compile:contracts": "hardhat compile",
-    "deploy:contracts": "hardhat run scripts/deploy.cjs --network baseSepolia"
+    "deploy:contracts": "hardhat run scripts/deploy.cjs --network baseSepolia",
+    "deploy:policy": "hardhat run scripts/deploy-policy.cjs --network baseSepolia"
   },
   "keywords": [
     "zktls",

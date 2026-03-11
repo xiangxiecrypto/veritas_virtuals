@@ -48,7 +48,12 @@ const VERIFIER_ABI = [
 ];
 
 const HOOK_ABI = [
-  "function verifyDeliverable(uint256 jobId, address providerAddress, bytes calldata encodedBundle) external returns (bool)",
+  "function registerProvider() external",
+  "function deregisterProvider() external",
+  "function setPolicy(address policyContract) external",
+  "function removePolicy() external",
+  "function evaluatorPolicies(address evaluator) view returns (address)",
+  "function verifyDeliverable(uint256 jobId, address providerAddress, address evaluatorAddress, bytes calldata encodedBundle) external returns (bool)",
   "function isProviderVerified(address provider, bytes32 chainHash) external view returns (bool)",
 ];
 
@@ -117,21 +122,71 @@ export class OnChainSubmitter {
 
   /**
    * Submit the ProofBundle to the ACP hook contract (gas required).
+   * The hook will verify proof authenticity AND enforce the evaluator's
+   * on-chain policy in a single automated transaction.
    */
   async submitBundle(
     jobId: number | bigint,
     bundle: ProofBundle,
     providerAddress: string,
+    evaluatorAddress: string,
   ): Promise<OnChainVerificationResult> {
     try {
       const hook = this.getHookContract();
       const encoded = this.encodeBundleForHook(bundle);
-      const tx = await hook.verifyDeliverable(jobId, providerAddress, encoded);
+      const tx = await hook.verifyDeliverable(
+        jobId,
+        providerAddress,
+        evaluatorAddress,
+        encoded,
+      );
       const receipt = await tx.wait();
       return { verified: true, txHash: receipt.hash };
     } catch (err: any) {
       return { verified: false, error: err.message };
     }
+  }
+
+  // ── Provider / Evaluator Management ─────────────────────
+
+  /**
+   * Register the caller as a TrustLayer-enabled provider on the hook.
+   */
+  async registerProvider(): Promise<string> {
+    const hook = this.getHookContract();
+    const tx = await hook.registerProvider();
+    const receipt = await tx.wait();
+    return receipt.hash;
+  }
+
+  /**
+   * Point the caller's evaluator slot to a deployed IEvaluatorPolicy contract.
+   * After this, verifyDeliverable automatically calls policy.check() — fully automated.
+   */
+  async setPolicy(policyContractAddress: string): Promise<string> {
+    const hook = this.getHookContract();
+    const tx = await hook.setPolicy(policyContractAddress);
+    const receipt = await tx.wait();
+    return receipt.hash;
+  }
+
+  /**
+   * Read the policy contract address registered for an evaluator.
+   * Returns the zero address if no policy is set.
+   */
+  async getPolicyAddress(evaluatorAddress: string): Promise<string> {
+    const hook = this.getHookContract();
+    return hook.evaluatorPolicies(evaluatorAddress);
+  }
+
+  /**
+   * Remove the caller's policy. Verification will only check proof authenticity.
+   */
+  async removePolicy(): Promise<string> {
+    const hook = this.getHookContract();
+    const tx = await hook.removePolicy();
+    const receipt = await tx.wait();
+    return receipt.hash;
   }
 
   /**

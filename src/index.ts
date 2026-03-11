@@ -32,4 +32,4 @@ export {
 
 // Utils (useful for bodyBuilder implementations)
 export { sha256, buildHashReference, bodyContainsHash } from "./utils/hash.js";
-export { isTrustedDomain, isLLMEndpoint, TRUSTED_DOMAINS } from "./utils/domain.js";
+export { extractDomain, isTrustedDomain, isLLMEndpoint } from "./utils/domain.js";

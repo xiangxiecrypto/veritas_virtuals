@@ -161,10 +161,10 @@ export interface ProofChainBuilderConfig {
   providerWallet: string;
   /**
    * Optional trusted domain whitelist enforced off-chain before submitting
-   * to Primus. If omitted, the SDK uses the built-in default whitelist.
+   * to Primus. If omitted, all domains are allowed at the SDK level.
    *
-   * Note: the ultimate security boundary is still the on-chain whitelist
-   * enforced by `TrustLayerVerifier.sol`.
+   * On-chain, domain enforcement is handled by each evaluator's
+   * IEvaluatorPolicy contract — not by TrustLayerVerifier.
    */
   trustedDomains?: Iterable<string>;
   /**

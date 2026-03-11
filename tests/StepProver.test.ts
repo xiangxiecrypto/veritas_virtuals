@@ -102,6 +102,33 @@ describe("StepProver", () => {
     );
   });
 
+  it("allows any domain when no trustedDomains is provided", async () => {
+    const setAttMode = jest.fn();
+    const prover = new StepProver(
+      {
+        generateRequestParams: jest.fn(() => ({ setAttMode })),
+        startAttestation: jest.fn(async () =>
+          makeAttestationResult(JSON.stringify({ value: "42" })),
+        ),
+        verifyAttestation: jest.fn(() => true),
+      },
+      // no trustedDomains → allow all
+    );
+
+    const config: StepConfig = {
+      stepId: "any_api",
+      url: "https://api.custom-unknown-service.com/v1/data",
+      method: "GET",
+      headers: {},
+      responseResolves: [
+        { keyName: "value", parseType: "json", parsePath: "$.value" },
+      ],
+    };
+
+    const result = await prover.prove(config, {}, providerWallet);
+    expect(result.data.value).toBe("42");
+  });
+
   it("accepts a downstream step when the upstream hash is present", async () => {
     const setAttMode = jest.fn();
     const prover = new StepProver(

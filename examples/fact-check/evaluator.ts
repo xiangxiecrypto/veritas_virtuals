@@ -1,33 +1,62 @@
 /**
  * examples/fact-check/evaluator.ts
  *
- * Buyer-side: How to evaluate a Deliverable Memo that contains
- * a TrustLayer ProofBundle.
+ * Buyer-side evaluator for a fact-check ACP Job.
  *
- * Two modes:
- *   1. Off-chain: SDK validates attestation signatures locally
- *   2. On-chain:  Submit to TrustLayerVerifier on Base for full verification
+ * Setup flow (one-time):
+ *   1. Deploy a FactCheckPolicy contract (see contracts/policies/FactCheckPolicy.sol)
+ *   2. Call hook.setPolicy(factCheckPolicyAddress)
+ *
+ * Runtime flow (fully automated, zero human intervention):
+ *   1. Provider delivers a proof bundle
+ *   2. ACP Job calls hook.verifyDeliverable(...)
+ *   3. Hook verifies proof authenticity via TrustLayerVerifier
+ *   4. Hook calls FactCheckPolicy.check(bundle, provider)
+ *   5. If both pass → escrow releases
  */
 
 import { OnChainSubmitter } from "../../src/chain/OnChainSubmitter.js";
 import { ProofBundle } from "../../src/types/index.js";
 
-// ── Off-chain Evaluation (inside ACP onEvaluate callback) ─────
+// ── Phase 1: One-time setup ─────────────────────────────────
 
+/**
+ * Register the evaluator's policy contract address on the hook.
+ * The policy contract (e.g. FactCheckPolicy) must already be deployed.
+ */
+export async function setupEvaluator(
+  policyContractAddress: string,
+): Promise<string> {
+  const submitter = new OnChainSubmitter(
+    process.env.BUYER_PRIVATE_KEY!,
+    "base_sepolia",
+    undefined,
+    { TrustLayerACPHook: process.env.TRUST_LAYER_ACP_HOOK_ADDRESS },
+  );
+
+  const txHash = await submitter.setPolicy(policyContractAddress);
+  console.log(`[Evaluator] Policy contract set. TX: ${txHash}`);
+  return txHash;
+}
+
+// ── Phase 2: Automated verification ──────────────────────────
+
+/**
+ * Optional off-chain pre-check. Lightweight validation that can run
+ * in the evaluator's runtime without touching the chain.
+ */
 export async function evaluateDeliverable(deliverableJson: string): Promise<{
   accept: boolean;
   reason: string;
 }> {
   const deliverable = JSON.parse(deliverableJson);
 
-  // ── Basic schema validation ─────────────────────────────
   if (!deliverable.verdict || !deliverable.score || !deliverable.proofBundle) {
     return { accept: false, reason: "Missing required fields in deliverable" };
   }
 
   const bundle: ProofBundle = deliverable.proofBundle;
 
-  // ── Validate bundle structure ───────────────────────────
   if (!bundle.steps || bundle.steps.length === 0) {
     return { accept: false, reason: "Empty proof bundle" };
   }
@@ -40,8 +69,6 @@ export async function evaluateDeliverable(deliverableJson: string): Promise<{
     return { accept: false, reason: "Missing llm_inference proof step" };
   }
 
-  // ── Validate chain hash integrity (off-chain) ───────────
-  // Re-derive the expected chain hash from the bundle's Primus task ids
   const { computeChainHash } = await import("../../src/utils/hash.js");
   const primusTaskIds = bundle.steps.map((s) => s.primusTaskId);
   const expectedHash = computeChainHash(primusTaskIds);
@@ -50,18 +77,6 @@ export async function evaluateDeliverable(deliverableJson: string): Promise<{
     return { accept: false, reason: "Chain hash integrity check failed" };
   }
 
-  // ── Validate timestamps (not older than 10 minutes) ─────
-  const tenMinutesAgo = Date.now() - 600_000;
-  for (const step of bundle.steps) {
-    if (step.attestation.attestation.timestamp < tenMinutesAgo) {
-      return {
-        accept: false,
-        reason: `Step "${step.stepId}" attestation is too old`,
-      };
-    }
-  }
-
-  // ── Validate score range ────────────────────────────────
   if (deliverable.score < 0 || deliverable.score > 100) {
     return { accept: false, reason: "Score out of range [0-100]" };
   }
@@ -69,35 +84,40 @@ export async function evaluateDeliverable(deliverableJson: string): Promise<{
   return { accept: true, reason: "All off-chain checks passed" };
 }
 
-// ── On-chain Evaluation (full verification on Base) ───────────
-
+/**
+ * Submit to the on-chain hook for fully automated verification.
+ * The hook enforces proof authenticity + evaluator policy in one tx.
+ */
 export async function evaluateOnChain(
   deliverableJson: string,
   providerAddress: string,
+  evaluatorAddress: string,
+  jobId: number | bigint = 0,
 ): Promise<{ verified: boolean; txHash?: string; error?: string }> {
   const deliverable = JSON.parse(deliverableJson);
   const bundle: ProofBundle = deliverable.proofBundle;
 
   const submitter = new OnChainSubmitter(
     process.env.BUYER_PRIVATE_KEY!,
-    "base_mainnet",
+    "base_sepolia",
+    undefined,
+    {
+      TrustLayerVerifier: process.env.TRUST_LAYER_VERIFIER_ADDRESS,
+      TrustLayerACPHook: process.env.TRUST_LAYER_ACP_HOOK_ADDRESS,
+    },
   );
 
-  // Dry-run first (no gas)
   const dryRun = await submitter.verifyBundle(bundle, providerAddress);
   if (!dryRun.verified) {
     return { verified: false, error: dryRun.error };
   }
 
-  // Submit on-chain for permanent record
-  // NOTE: In production this is invoked by ACP Job contracts, which know the jobId.
-  // For a buyer-side manual submission, you must pass a jobId that your hook expects.
-  return submitter.submitBundle(0, bundle, providerAddress);
+  return submitter.submitBundle(jobId, bundle, providerAddress, evaluatorAddress);
 }
 
 // ── Example ACP onEvaluate integration ───────────────────────
 
-export function createEvaluator(onChain = false) {
+export function createEvaluator(evaluatorAddress: string, onChain = false) {
   return async (job: any) => {
     const { accept, reason } = await evaluateDeliverable(job.deliverable);
 
@@ -108,8 +128,11 @@ export function createEvaluator(onChain = false) {
     }
 
     if (onChain) {
-      // Full on-chain verification before accepting
-      const result = await evaluateOnChain(job.deliverable, job.providerAddress);
+      const result = await evaluateOnChain(
+        job.deliverable,
+        job.providerAddress,
+        evaluatorAddress,
+      );
       if (!result.verified) {
         await job.evaluate(false, `On-chain verification failed: ${result.error}`);
         return;

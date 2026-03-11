@@ -108,8 +108,8 @@ Step `B` may be:
 - a compliance engine
 - an analytics or simulation API
 
-The only requirement is that the call is made over HTTPS to a domain accepted
-by the TrustLayer policy.
+The only requirement is that the call is made over HTTPS. Domain restrictions,
+if any, are defined by each evaluator in their `IEvaluatorPolicy` contract.
 
 ---
 
@@ -136,9 +136,9 @@ proof chain.
 
 The Provider replaces a trusted downstream API with a local or malicious one.
 
-**Defense**: The attestation proves which HTTPS domain was contacted, and the
-TrustLayer verifier can enforce a trusted domain whitelist when on-chain checks
-are used.
+**Defense**: The attestation proves which HTTPS domain was contacted. Each
+evaluator's `IEvaluatorPolicy` contract can enforce a domain whitelist to
+reject calls to untrusted endpoints.
 
 ### Attack 4: Replay an old proof bundle
 
@@ -194,19 +194,60 @@ Optional on-chain path:
 For each step in bundle.steps:
   1. primus.verifyAttestation(att)         -> attestation signature valid
   2. att.recipient == providerAddress      -> correct provider
-  3. extractDomain(att.request.url)        -> domain allowed
-  4. att.timestamp within max age window   -> not stale
-  5. if step index > 0:
+  3. att.timestamp within max age window   -> not stale
+  4. if step index > 0:
        SHA256(prevStep.data) in current request body -> chain intact
 
 After all steps:
-  6. rollingKeccak(all step.primusTaskId values) == bundle.chainHash  -> bundle unmodified
+  5. rollingKeccak(all step.primusTaskId values) == bundle.chainHash  -> bundle unmodified
+
+Note: domain whitelisting is NOT part of the verifier. Domain checks belong
+in each evaluator's IEvaluatorPolicy contract (see below).
 ```
 
 `bundle.chainHash` is a rolling `keccak256` over all `step.primusTaskId`
 values and must match the verifier's computation exactly. These ids come from
 the Primus SDK result and are carried by TrustLayer at the step level; they are
 not fields inside the official Primus on-chain `Attestation` struct.
+
+## Evaluator Policy Architecture
+
+TrustLayerACPHook delegates business-level verification to external
+**IEvaluatorPolicy** contracts. Each evaluator deploys their own Solidity
+contract that implements a single `check(bundle, provider)` function:
+
+```
+┌──────────────────────────┐
+│   ACP Job Contract       │
+│     ↓ onEvaluate         │
+├──────────────────────────┤
+│   TrustLayerACPHook      │
+│     1. proof authenticity │ ← TrustLayerVerifier
+│     2. policy.check()    │ ← IEvaluatorPolicy (evaluator's contract)
+│     3. cache result      │
+└──────────────────────────┘
+```
+
+### Why interface-based policies?
+
+- **Full freedom**: Any Solidity logic — step requirements, domain checks,
+  cross-step data validation, custom scoring, time-dependent rules.
+- **Low deployment cost**: A minimal policy contract is ~200 lines. Deploy once
+  and register via `hook.setPolicy(address)`.
+- **Isolated upgrades**: Evaluator deploys a new contract and calls
+  `setPolicy()` again. Other evaluators are unaffected.
+- **Composability**: Policies can call other contracts, oracles, or libraries.
+
+### Lifecycle
+
+1. Evaluator writes a contract implementing `IEvaluatorPolicy`.
+2. Evaluator deploys it (one transaction).
+3. Evaluator calls `hook.setPolicy(contractAddress)` (one transaction).
+4. From this point, all `verifyDeliverable()` calls for this evaluator
+   are **fully automated** — the hook calls the policy contract and the
+   result determines escrow release.
+
+See `contracts/policies/FactCheckPolicy.sol` for a reference implementation.
 
 ---
 
@@ -248,8 +289,10 @@ This is optional and is only needed when you want the blockchain itself to gate
 state transitions such as escrow release.
 
 - `IPrimusZKTLS.verifyAttestation(attestation)` validates the attestation
-- `TrustLayerVerifier` adds bundle-level checks like domain policy, recipient,
-  timestamp freshness, and step linkage
+- `TrustLayerVerifier` adds bundle-level checks: recipient, timestamp
+  freshness, and step linkage
+- `IEvaluatorPolicy` contracts add business rules: domain whitelists,
+  required steps, scoring, etc.
 
 ---
 
@@ -280,7 +323,36 @@ Practical rule:
 | `verifyAttestation` (1 step) | ~80,000 | ~$0.001 |
 | `verifyProofBundle` (2 steps) | ~200,000 | ~$0.002 |
 | `verifyProofBundle` (5 steps) | ~450,000 | ~$0.005 |
-| Full job with bundle submission | ~300,000 | ~$0.003 |
+| `verifyDeliverable` (proof + policy) | ~300,000 | ~$0.003 |
+| Deploy a minimal policy contract | ~200,000 | ~$0.002 |
+| `setPolicy()` (one-time) | ~50,000 | ~$0.0005 |
 
 On Base L2, full verification is cheap enough to gate escrow without materially
-changing the economics of most ACP jobs.
+changing the economics of most ACP jobs. Deploying a new policy contract is a
+one-time cost and is comparable to a single verification call.
+
+---
+
+## Contract Relationships
+
+```
+┌──────────────────────┐   ┌────────────────────┐
+│  TrustLayerVerifier  │   │  IPrimusZKTLS      │
+│  verifyProofBundle() │──►│  verifyAttestation()│
+│  timestamp checks    │   └────────────────────┘
+│  chain linkage       │
+└──────────┬───────────┘
+           │ called by
+┌──────────▼───────────┐   ┌────────────────────┐
+│  TrustLayerACPHook   │   │  IEvaluatorPolicy  │
+│  verifyDeliverable() │──►│  check()           │
+│  provider registry   │   │  (per-evaluator)   │
+│  result cache        │   └────────────────────┘
+└──────────────────────┘
+           │ called by
+┌──────────▼───────────┐
+│  ACP Job Contract    │
+│  onEvaluate()        │
+│  escrow release      │
+└──────────────────────┘
+```

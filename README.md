@@ -24,15 +24,21 @@ TrustLayer fixes this at the **cryptographic layer**, not at the reputation laye
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  Layer 4: Optional On-chain Verification (Base Chain)        │
+│  Layer 5: Evaluator Policy Contracts (IEvaluatorPolicy)      │
+│  Each evaluator deploys custom Solidity logic.               │
+│  TrustLayerACPHook calls policy.check() automatically.       │
+└───────────────────────────┬──────────────────────────────────┘
+                            │ fully automated evaluation
+┌───────────────────────────▼──────────────────────────────────┐
+│  Layer 4: On-chain Verification (Base Chain)                 │
 │  TrustLayerVerifier.sol ──► IPrimusZKTLS.verifyAttestation   │
-│  Used when escrow release should be gated on-chain           │
+│  TrustLayerACPHook.sol ──► proof check + policy.check()      │
 └───────────────────────────┬──────────────────────────────────┘
                             │ on-chain verification
 ┌───────────────────────────▼──────────────────────────────────┐
 │  Layer 3: Proof Chain Builder (Provider runtime)             │
 │  ProofChainBuilder.ts                                        │
-│  ├── Step A: HTTPS Attestation (any trusted API endpoint)    │
+│  ├── Step A: HTTPS Attestation (any HTTPS API endpoint)      │
 │  ├── Step B: HTTPS Attestation (often an LLM, but general)   │
 │  └── Linkage: SHA256(stepA.data) ∈ stepB.request.body        │
 └───────────────────────────┬──────────────────────────────────┘
@@ -57,7 +63,7 @@ TrustLayer fixes this at the **cryptographic layer**, not at the reputation laye
 |---|---|
 | Provider fabricates data source | Attestation_1 cryptographically proves HTTP response came from a real domain |
 | Provider tampers data before sending to LLM | Attestation_2 body must contain SHA256(Attestation_1.data) — tampering breaks the hash |
-| Provider uses a local fake LLM | Attestation_2 proves request was sent to a trusted inference API such as `api.openai.com` or `api.deepseek.com`, domain whitelist enforced on-chain |
+| Provider uses a local fake LLM | Attestation_2 proves request was sent to a real HTTPS endpoint; evaluator's policy contract enforces allowed domains on-chain |
 | Provider replays an old proof | Timestamp check: attestation must be within the Job SLA window |
 | Provider forges an attestation locally | SDK/off-chain verification and optional on-chain verification both reject invalid attestations |
 | Provider swaps recipient address | Contract verifies `recipient == provider wallet address` |
@@ -84,12 +90,13 @@ trust-layer/
 │   ├── TrustLayerVerifier.sol       # Core on-chain verifier
 │   ├── TrustLayerACPHook.sol        # ACP Job integration hook
 │   ├── interfaces/
-│   │   ├── IPrimusZKTLS.sol         # Primus interface
-│   │   └── ITrustLayer.sol          # TrustLayer public interface
+│   │   ├── IPrimusZKTLS.sol         # Primus attestation interface
+│   │   ├── ITrustLayer.sol          # TrustLayer public interface
+│   │   └── IEvaluatorPolicy.sol     # Evaluator policy interface
+│   ├── policies/
+│   │   └── FactCheckPolicy.sol      # Reference evaluator policy
 │   └── libraries/
 │       └── ProofParser.sol          # ABI decode helpers
-├── sdk/
-│   └── index.ts                     # Public SDK exports
 ├── examples/
 │   ├── fact-check/
 │   │   ├── provider.ts              # Full ArAIstotle-style example
@@ -99,8 +106,7 @@ trust-layer/
 │       └── evaluator.ts             # Generic buyer-side verification example
 ├── docs/
 │   ├── ARCHITECTURE.md              # Deep-dive architecture doc
-│   ├── INTEGRATION_GUIDE.md         # Provider integration guide
-│   └── CONTRACTS.md                 # Contract reference
+│   └── INTEGRATION_GUIDE.md         # Provider & evaluator integration guide
 ├── package.json
 ├── tsconfig.json
 └── .env.example
@@ -174,18 +180,60 @@ await job.deliver(JSON.stringify({
 }));
 ```
 
-### 3. Verification Options
+### 3. Evaluator: Deploy a Policy Contract (one-time)
+
+Each evaluator deploys their own `IEvaluatorPolicy` contract with arbitrary
+Solidity verification logic, then registers it on the hook:
 
 ```solidity
-// Optional on-chain verification inside ACP evaluation
-TrustLayerVerifier verifier = TrustLayerVerifier(TRUST_LAYER_VERIFIER_BASE);
-bool verified = verifier.verifyProofBundle(proofBundle, providerAddress);
-require(verified, "TrustLayer: proof chain invalid");
+// Example: FactCheckPolicy — requires data_source + llm_inference steps
+contract FactCheckPolicy is IEvaluatorPolicy {
+    function check(
+        ITrustLayer.ProofBundle calldata bundle,
+        address provider
+    ) external view returns (bool) {
+        require(bundle.steps.length >= 2, "need 2 steps");
+        // ... any custom business logic ...
+        return true;
+    }
+}
+```
+
+```typescript
+import { OnChainSubmitter } from "@trust-layer/sdk";
+
+const submitter = new OnChainSubmitter(privateKey, "base_sepolia", undefined, {
+  TrustLayerACPHook: hookAddress,
+});
+
+// One-time: point evaluator to the deployed policy contract
+await submitter.setPolicy(factCheckPolicyAddress);
+```
+
+After `setPolicy()`, all `verifyDeliverable()` calls for this evaluator are
+fully automated — the hook checks proof authenticity and calls `policy.check()`.
+
+### 4. On-chain Verification Flow
+
+```
+verifyDeliverable(jobId, provider, evaluator, bundle)
+  ├─ TrustLayerVerifier.verifyProofBundle(bundle, provider)   // proof authenticity
+  ├─ IEvaluatorPolicy(evaluator).check(bundle, provider)      // business logic
+  └─ cache result → escrow can release
 ```
 
 You can also verify attestations off-chain with the Primus core-sdk before ever
 calling a contract. TrustLayer uses that off-chain verification path during
 proof generation already.
+
+### 5. Reference Policy Contracts
+
+| Policy Contract | Use Case |
+|---|---|
+| `FactCheckPolicy.sol` | 2-step fact-check (data_source + llm_inference), domain whitelist, freshness |
+| *(your custom policy)* | Any Solidity logic: step counts, domains, cross-step data, scoring |
+
+See `contracts/policies/` for reference implementations.
 
 ---
 
@@ -199,18 +247,21 @@ proof generation already.
 
 ---
 
-## Trusted Domain Whitelist
+## Domain Policy
 
-The on-chain verifier enforces that all attested URLs belong to a whitelist of trusted domains. Initial whitelist:
+TrustLayer supports **any HTTPS API**. There is no global domain whitelist at the
+verifier level.
 
-**Data Sources:** `reuters.com`, `apnews.com`, `sec.gov`, `coindesk.com`, `coingecko.com`, `api.coingecko.com`, `finance.yahoo.com`
+Domain restrictions are a **business rule** managed by each evaluator in their
+`IEvaluatorPolicy` contract. For example, `FactCheckPolicy.sol` maintains its
+own domain whitelist and checks every step's URL against it.
 
-**LLM APIs:** `api.openai.com`, `api.deepseek.com`, `api.anthropic.com`, `api.mistral.ai`, `generativelanguage.googleapis.com`
-
-Whitelist governance is managed by the contract owner (Phase 1), with plans for decentralized staking-based governance in Phase 4.
-
-> Note: Off-chain, the SDK can be configured with a custom `trustedDomains` list for early rejection.
-> On-chain, `TrustLayerVerifier.sol` remains the final enforcement point.
+> **Off-chain**: The SDK accepts an optional `trustedDomains` set in
+> `ProofChainBuilderConfig` for early rejection of typos. If omitted, all
+> domains are allowed at the SDK level.
+>
+> **On-chain**: Each evaluator's policy contract decides which domains are
+> acceptable for their use case.
 
 ## Default TLS Mode
 
@@ -225,10 +276,10 @@ comfortable with the additional latency.
 
 | Phase | Description |
 |---|---|
-| **Phase 1** (Now) | TrustLayer SDK ships. Providers opt-in. Verified providers get 🛡️ badge on agdp.io |
+| **Phase 1** (Now) | TrustLayer SDK ships. Providers opt-in. Verified providers get badge on agdp.io |
 | **Phase 2** | agdp.io adds `trustLayerEnabled` filter. Buyers can filter for verified providers |
-| **Phase 3** | ACP Job contract upgrade: `trustLayerEnabled` providers must pass proof verification for escrow release |
-| **Phase 4** | Domain whitelist governance decentralized via staking |
+| **Phase 3** | ACP Job contract upgrade: `trustLayerEnabled` providers must pass proof verification. Evaluators deploy `IEvaluatorPolicy` contracts for fully automated escrow gating |
+| **Phase 4** | Governance decentralized via staking |
 
 ---
 

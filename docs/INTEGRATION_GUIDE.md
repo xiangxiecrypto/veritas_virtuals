@@ -200,9 +200,10 @@ await builder.addStep({
 
 ---
 
-## Step 6: Optional Off-chain Domain Policy
+## Step 6: Optional Off-chain Domain Checking
 
-The SDK can reject domains early before a request is sent to Primus.
+The SDK can optionally reject domains early before a request is sent to Primus.
+If you omit `trustedDomains`, all domains are allowed at the SDK level.
 
 ```typescript
 const builder = new ProofChainBuilder({
@@ -219,8 +220,9 @@ const builder = new ProofChainBuilder({
 
 Important:
 
-- this off-chain allowlist is a convenience and safety layer
-- the **on-chain verifier whitelist remains the final enforcement point**
+- this off-chain allowlist is purely a convenience for catching misconfigurations
+- **on-chain domain enforcement belongs in each evaluator's IEvaluatorPolicy contract**
+- `TrustLayerVerifier` does NOT check domains — it only verifies proof authenticity
 
 ---
 
@@ -235,13 +237,15 @@ This is the default enterprise/core-sdk setup.
 - a Buyer or Evaluator can repeat the same off-chain verification
 - no contract call is required unless your workflow wants one
 
-### Option B: Optional On-chain Verification
+### Option B: On-chain Verification with Automated Evaluator Policy
 
 Use this when escrow release or another contract-level action should depend on
-proof verification.
+proof verification. This is the recommended path for production ACP flows.
 
 - proof generation still happens off-chain
-- the proof is later verified on-chain by TrustLayer contracts
+- the proof is verified on-chain by `TrustLayerVerifier`
+- the evaluator's custom `IEvaluatorPolicy` contract checks business rules
+- everything is fully automated after one-time setup
 
 ---
 
@@ -264,20 +268,96 @@ Because `proxytls` is the default, most workloads only need a modest SLA bump.
 
 ---
 
-## Step 9: Register with `TrustLayerACPHook` (Optional, Phase 3)
+## Step 9: Register Provider with `TrustLayerACPHook`
 
-Once the hook contract is deployed, opt in to optional on-chain enforcement:
+Once the hook contract is deployed, opt in to on-chain enforcement:
 
 ```typescript
 import { OnChainSubmitter } from "@trust-layer/sdk";
 
 const submitter = new OnChainSubmitter(
   process.env.WALLET_PRIVATE_KEY!,
-  "base_mainnet",
+  "base_sepolia",
+  undefined,
+  { TrustLayerACPHook: process.env.TRUST_LAYER_ACP_HOOK_ADDRESS },
 );
 
-// One-time setup is performed via TrustLayerACPHook.registerProvider()
+await submitter.registerProvider();
 ```
+
+---
+
+## Step 10: Evaluator — Deploy and Register a Policy Contract
+
+Each evaluator deploys a custom Solidity contract implementing
+`IEvaluatorPolicy`. This contract contains any verification logic the
+evaluator wants — step counts, required step IDs, freshness, cross-step
+data checks, scoring thresholds, oracle calls, etc.
+
+### 10a: Write the Policy Contract
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import { ITrustLayer } from "./interfaces/ITrustLayer.sol";
+import { IEvaluatorPolicy } from "./interfaces/IEvaluatorPolicy.sol";
+
+contract MyPolicy is IEvaluatorPolicy {
+    function check(
+        ITrustLayer.ProofBundle calldata bundle,
+        address /* provider */
+    ) external view returns (bool) {
+        // Example: require at least 2 steps
+        require(bundle.steps.length >= 2, "need >= 2 steps");
+        // ... any custom Solidity logic ...
+        return true;
+    }
+}
+```
+
+See `contracts/policies/FactCheckPolicy.sol` for a full reference.
+
+### 10b: Deploy the Policy Contract
+
+```bash
+npx hardhat run scripts/deploy-policy.cjs --network baseSepolia
+```
+
+### 10c: Register on the Hook
+
+```typescript
+import { OnChainSubmitter } from "@trust-layer/sdk";
+
+const submitter = new OnChainSubmitter(
+  process.env.BUYER_PRIVATE_KEY!,
+  "base_sepolia",
+  undefined,
+  { TrustLayerACPHook: process.env.TRUST_LAYER_ACP_HOOK_ADDRESS },
+);
+
+await submitter.setPolicy(deployedPolicyAddress);
+```
+
+After this one-time setup, all `verifyDeliverable()` calls for this evaluator
+are fully automated:
+
+```
+verifyDeliverable(jobId, provider, evaluator, bundle)
+  ├─ TrustLayerVerifier.verifyProofBundle() → proof authenticity
+  ├─ IEvaluatorPolicy.check()              → business logic
+  └─ cache → escrow release
+```
+
+### 10d: Upgrading a Policy
+
+Deploy a new contract, then call `setPolicy(newAddress)`. Other evaluators
+are not affected.
+
+### 10e: Removing a Policy
+
+Call `removePolicy()` to disable business-level checks. Verification will
+only check proof authenticity.
 
 ---
 
@@ -294,14 +374,15 @@ For most ACP jobs, defaulting to `proxytls` is the most practical choice.
 
 ---
 
-## Supported Domains
+## Domain Policy
 
-Each step's `url` must resolve to a domain accepted by TrustLayer policy.
+TrustLayer supports **any HTTPS API**. There is no global domain restriction.
 
-- SDK side: optional early rejection via `trustedDomains`
-- Contract side: final whitelist enforcement on-chain
-
-See [README.md](../README.md#trusted-domain-whitelist) for the default list.
+- **SDK side**: optional early rejection via `trustedDomains` in
+  `ProofChainBuilderConfig`. If omitted, all domains are allowed.
+- **On-chain**: each evaluator defines their own domain whitelist (if any)
+  inside their `IEvaluatorPolicy` contract. See `FactCheckPolicy.sol` for
+  an example that includes domain checking.
 
 ---
 
@@ -314,9 +395,9 @@ Use `buildHashReference(stepId, value)` inside `bodyBuilder()`.
 
 ### `TrustLayerError: UNTRUSTED_DOMAIN`
 
-The URL is not accepted by the configured policy.
-Either add it to your off-chain `trustedDomains` config or get it added to the
-on-chain whitelist.
+The URL is not in your off-chain `trustedDomains` set. Either add it to the
+`trustedDomains` config in `ProofChainBuilderConfig`, or omit `trustedDomains`
+entirely to allow all domains at the SDK level.
 
 ### `TrustLayerError: RECIPIENT_MISMATCH`
 
@@ -331,3 +412,9 @@ Check:
 - `PRIMUS_APP_SECRET`
 - your Primus project status
 - that the runtime environment can load `@primuslabs/zktls-core-sdk`
+
+### `TrustLayerACPHook: evaluator policy rejected`
+
+The evaluator's `IEvaluatorPolicy.check()` returned false or reverted.
+Check the policy contract's requirements — step count, required step IDs,
+freshness, or any custom conditions.

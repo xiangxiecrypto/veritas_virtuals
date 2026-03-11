@@ -51,19 +51,21 @@ const acpClient = new AcpClient({
   },
 
   onEvaluate: async (job) => {
-    // Buyer-side: validate the delivered proof bundle
+    // In production, evaluation is fully automated on-chain:
+    //   1. Deploy a FactCheckPolicy contract (see contracts/policies/FactCheckPolicy.sol)
+    //   2. Call hook.setPolicy(policyAddress) once
+    //   3. ACP Job calls hook.verifyDeliverable() → proof check + policy.check()
+    //
+    // The code below is an off-chain fallback for development/testing.
     const deliverable = JSON.parse(job.deliverable);
 
     if (!deliverable.proofBundle) {
-      // Provider claimed TrustLayer but didn't include bundle
       await job.evaluate(false, "Missing proofBundle in deliverable");
       return;
     }
 
-    // Optional: off-chain pre-check before on-chain verification
     console.log(`[TrustLayer] Verifying proof bundle with ${deliverable.proofBundle.steps.length} steps`);
 
-    // For now: basic format check. In production, call on-chain verifier.
     const hasDataSource = deliverable.proofBundle.steps.some(
       (s: any) => s.stepId === "data_source"
     );

@@ -6,6 +6,16 @@ import {Attestation} from "./IPrimusZKTLS.sol";
 /**
  * @title ITrustLayer
  * @notice Public interface for the TrustLayer verification system.
+ *
+ * The verifier is responsible ONLY for cryptographic proof verification:
+ *   - Primus attestation signature validity
+ *   - Recipient matches provider wallet
+ *   - Attestation freshness (timestamp)
+ *   - Cross-step chain linkage (hash dependency)
+ *   - Bundle chain hash integrity
+ *
+ * Business-level rules (domain whitelists, required steps, scoring, etc.)
+ * belong in IEvaluatorPolicy contracts deployed by individual evaluators.
  */
 interface ITrustLayer {
 
@@ -40,21 +50,12 @@ interface ITrustLayer {
         string reason
     );
 
-    event DomainWhitelisted(bytes32 indexed domainHash, string domain);
-    event DomainRemoved(bytes32 indexed domainHash);
-
     // ── Core Verification ────────────────────────────────────
 
     function verifyProofBundle(
         ProofBundle calldata bundle,
         address providerAddress
     ) external view returns (bool verified);
-
-    // ── Domain Whitelist ─────────────────────────────────────
-
-    function isDomainTrusted(string calldata domain) external view returns (bool);
-    function addTrustedDomain(string calldata domain) external;
-    function removeTrustedDomain(string calldata domain) external;
 
     // ── Configuration ────────────────────────────────────────
 

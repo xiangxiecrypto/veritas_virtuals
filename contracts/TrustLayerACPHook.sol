@@ -3,24 +3,32 @@ pragma solidity ^0.8.20;
 
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { ITrustLayer } from "./interfaces/ITrustLayer.sol";
+import { IEvaluatorPolicy } from "./interfaces/IEvaluatorPolicy.sol";
 
 /**
  * @title TrustLayerACPHook
  * @notice Integration hook between TrustLayer and the Virtuals ACP Job system.
  *
- * Providers that opt into TrustLayer register here. When their ACP Job
- * reaches the EVALUATION phase, this contract is called to verify the
- * ProofBundle before the escrow can release.
+ * Two roles interact with this contract:
  *
- * ACP Job contracts call `verifyDeliverable()` in their onEvaluate hook.
+ *   Provider  — opts in to TrustLayer via `registerProvider()`.
+ *   Evaluator — registers the address of their IEvaluatorPolicy contract
+ *               via `setPolicy()`. The policy contract can contain any
+ *               custom Solidity logic.
  *
- * ┌─────────────────────────────────────────┐
- * │  ACP Job Contract                       │
- * │  onEvaluate:                            │
- * │    if trustLayerEnabled[provider]:      │
- * │      ACPHook.verifyDeliverable(...)  ✅  │
- * │    escrow.release()                     │
- * └─────────────────────────────────────────┘
+ * Once a policy is set, verification is **fully automated**:
+ *
+ *   1. ACP Job contract calls `verifyDeliverable(jobId, provider, evaluator, bundle)`
+ *   2. Hook delegates proof-authenticity check to TrustLayerVerifier
+ *   3. Hook calls the evaluator's policy contract via IEvaluatorPolicy.check()
+ *   4. If both pass, the result is cached and escrow can release
+ *
+ * ┌─────────────────────────────────────────────────────────┐
+ * │  ACP Job Contract                                       │
+ * │  onEvaluate:                                            │
+ * │    ACPHook.verifyDeliverable(job, provider, eval, data) │
+ * │    if verified → escrow.release()                       │
+ * └─────────────────────────────────────────────────────────┘
  */
 contract TrustLayerACPHook is Ownable {
 
@@ -31,6 +39,9 @@ contract TrustLayerACPHook is Ownable {
     /// Providers who have opted into TrustLayer verification
     mapping(address => bool) public trustLayerEnabled;
 
+    /// evaluator address → their IEvaluatorPolicy contract
+    mapping(address => IEvaluatorPolicy) public evaluatorPolicies;
+
     /// provider → chainHash → verified
     mapping(address => mapping(bytes32 => bool)) public verifiedBundles;
 
@@ -38,8 +49,13 @@ contract TrustLayerACPHook is Ownable {
 
     event ProviderRegistered(address indexed provider);
     event ProviderDeregistered(address indexed provider);
+
+    event PolicySet(address indexed evaluator, address indexed policyContract);
+    event PolicyRemoved(address indexed evaluator);
+
     event DeliverableVerified(
         address indexed provider,
+        address indexed evaluator,
         bytes32 indexed chainHash,
         uint256 jobId
     );
@@ -52,64 +68,94 @@ contract TrustLayerACPHook is Ownable {
 
     // ── Provider Registration ────────────────────────────────
 
-    /**
-     * @notice Provider opts into TrustLayer verification.
-     *         Once enabled, all their ACP jobs will require proof bundles.
-     */
     function registerProvider() external {
         trustLayerEnabled[msg.sender] = true;
         emit ProviderRegistered(msg.sender);
     }
 
-    /**
-     * @notice Provider opts out of TrustLayer verification.
-     */
     function deregisterProvider() external {
         trustLayerEnabled[msg.sender] = false;
         emit ProviderDeregistered(msg.sender);
     }
 
-    // ── Verification ─────────────────────────────────────────
+    // ── Evaluator Policy Management ──────────────────────────
+
+    /**
+     * @notice Set (or update) the evaluator's policy contract.
+     *
+     * The policy contract must implement IEvaluatorPolicy.
+     * Deploy your custom policy once, then register its address here.
+     * After this, verifyDeliverable enforces it automatically.
+     *
+     * @param policyContract Address of the deployed IEvaluatorPolicy contract
+     */
+    function setPolicy(address policyContract) external {
+        require(policyContract != address(0), "TrustLayerACPHook: zero address");
+        evaluatorPolicies[msg.sender] = IEvaluatorPolicy(policyContract);
+        emit PolicySet(msg.sender, policyContract);
+    }
+
+    /**
+     * @notice Remove the evaluator's policy. Verification will only
+     *         check proof authenticity (no business-level checks).
+     */
+    function removePolicy() external {
+        delete evaluatorPolicies[msg.sender];
+        emit PolicyRemoved(msg.sender);
+    }
+
+    // ── Automated Verification ───────────────────────────────
 
     /**
      * @notice Called by ACP Job contracts during job evaluation.
      *
-     * If the provider has TrustLayer enabled, the proof bundle in the
-     * deliverable is verified on-chain. If verification passes, the
-     * result is cached so the escrow can be released.
+     * Verification flow (fully automated, zero human intervention):
+     *   1. If provider has not opted in, pass through (backward compatible)
+     *   2. Verify proof authenticity via TrustLayerVerifier
+     *   3. If evaluator has a policy contract, call IEvaluatorPolicy.check()
+     *   4. Cache the result so escrow can release
      *
-     * If the provider does NOT have TrustLayer enabled, this is a no-op
-     * and returns true (preserving backwards compatibility).
-     *
-     * @param jobId           ACP Job ID
-     * @param providerAddress Provider's registered wallet
-     * @param encodedBundle   ABI-encoded ProofBundle from the Deliverable Memo
-     * @return verified       True if proof is valid or TrustLayer not enabled
+     * @param jobId              ACP Job ID
+     * @param providerAddress    Provider's registered wallet
+     * @param evaluatorAddress   Evaluator whose policy to apply
+     * @param encodedBundle      ABI-encoded ProofBundle from the Deliverable Memo
+     * @return verified          True if proof is valid and policy is satisfied
      */
     function verifyDeliverable(
         uint256 jobId,
         address providerAddress,
+        address evaluatorAddress,
         bytes calldata encodedBundle
     ) external returns (bool verified) {
-        // If not opted in, pass through
         if (!trustLayerEnabled[providerAddress]) {
             return true;
         }
 
-        // Decode the bundle
         ITrustLayer.ProofBundle memory bundle = abi.decode(
             encodedBundle,
             (ITrustLayer.ProofBundle)
         );
 
-        // Verify via TrustLayerVerifier
+        // ── Step 1: proof authenticity ───────────────────────
         bool valid = verifier.verifyProofBundle(bundle, providerAddress);
-        require(valid, "TrustLayerACPHook: proof bundle verification failed");
+        require(valid, "TrustLayerACPHook: proof verification failed");
 
-        // Cache the result
+        // ── Step 2: evaluator policy ─────────────────────────
+        IEvaluatorPolicy policy = evaluatorPolicies[evaluatorAddress];
+        if (address(policy) != address(0)) {
+            bool passed = policy.check(bundle, providerAddress);
+            require(passed, "TrustLayerACPHook: evaluator policy rejected");
+        }
+
+        // ── Step 3: cache result ─────────────────────────────
         verifiedBundles[providerAddress][bundle.chainHash] = true;
 
-        emit DeliverableVerified(providerAddress, bundle.chainHash, jobId);
+        emit DeliverableVerified(
+            providerAddress,
+            evaluatorAddress,
+            bundle.chainHash,
+            jobId
+        );
         return true;
     }
 

@@ -127,16 +127,19 @@ async function main() {
     model: llmStep.data["model_used"],
   });
 
+  const hookAddress = resolveNetworkEnv(network, "TRUST_LAYER_ACP_HOOK_ADDRESS");
+
   const submitter = new OnChainSubmitter(
     requireEnv("WALLET_PRIVATE_KEY"),
     network,
     rpcUrl,
     {
       TrustLayerVerifier: trustLayerVerifierAddress,
-      TrustLayerACPHook: resolveNetworkEnv(network, "TRUST_LAYER_ACP_HOOK_ADDRESS"),
+      TrustLayerACPHook: hookAddress,
     },
   );
 
+  // ── Verify proof authenticity via TrustLayerVerifier ──────
   console.log("[live-test] Verifying bundle against deployed TrustLayerVerifier...");
   const result = await submitter.verifyBundle(
     bundle,
@@ -146,8 +149,35 @@ async function main() {
   if (!result.verified) {
     throw new Error(`On-chain verification failed: ${result.error}`);
   }
+  console.log("[live-test] Proof authenticity: passed");
 
-  console.log("[live-test] Success: on-chain verification passed");
+  // ── Test hook + evaluator policy flow (if hook is deployed) ──
+  if (hookAddress) {
+    const evaluatorAddress = process.env.EVALUATOR_ADDRESS;
+    if (evaluatorAddress) {
+      console.log("[live-test] Checking evaluator policy address...");
+      const policyAddr = await submitter.getPolicyAddress(evaluatorAddress);
+      console.log(`[live-test] Evaluator policy contract: ${policyAddr}`);
+
+      console.log("[live-test] Submitting bundle via hook.verifyDeliverable...");
+      const hookResult = await submitter.submitBundle(
+        0,
+        bundle,
+        requireEnv("AGENT_WALLET_ADDRESS"),
+        evaluatorAddress,
+      );
+      if (!hookResult.verified) {
+        throw new Error(`Hook verification failed: ${hookResult.error}`);
+      }
+      console.log(`[live-test] Hook verification: passed. TX: ${hookResult.txHash}`);
+    } else {
+      console.log("[live-test] EVALUATOR_ADDRESS not set — skipping hook + policy test");
+    }
+  } else {
+    console.log("[live-test] TRUST_LAYER_ACP_HOOK_ADDRESS not set — skipping hook test");
+  }
+
+  console.log("[live-test] All tests passed");
 }
 
 main().catch((error) => {

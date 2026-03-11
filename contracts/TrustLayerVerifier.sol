@@ -8,19 +8,21 @@ import { ProofParser } from "./libraries/ProofParser.sol";
 
 /**
  * @title TrustLayerVerifier
- * @notice Optional on-chain verifier for TrustLayer proof bundles.
+ * @notice On-chain verifier for TrustLayer proof bundles.
  *
- * Verifies that an ACP Provider:
- *  1. Actually fetched data from a trusted real-world HTTPS endpoint
- *  2. Fed that exact data (by hash) into a downstream HTTPS API
- *  3. The Deliverable Memo reflects the true downstream API output
+ * Responsible ONLY for cryptographic proof verification:
+ *   1. Primus attestation signature is valid
+ *   2. Attestation recipient matches the claimed provider wallet
+ *   3. Attestation timestamp is within the freshness window
+ *   4. Cross-step chain linkage is intact (SHA256 hash dependency)
+ *   5. Bundle-level chain hash integrity
+ *
+ * Domain whitelists, step requirements, and other business-level rules
+ * are NOT enforced here. Those belong in IEvaluatorPolicy contracts
+ * deployed by individual evaluators and called by TrustLayerACPHook.
  *
  * The Attestation struct matches the official Primus zkTLS contract:
  * https://github.com/primus-labs/zktls-contracts/blob/main/src/IPrimusZKTLS.sol
- *
- * Proof generation happens off-chain through the Primus core-sdk package.
- * This contract is only responsible for optional on-chain verification of the
- * resulting attestation bundle.
  */
 contract TrustLayerVerifier is ITrustLayer, Ownable {
     using ProofParser for string;
@@ -33,9 +35,6 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
     /// @inheritdoc ITrustLayer
     uint256 public maxAttestationAge;
 
-    /// domain keccak256 hash → trusted
-    mapping(bytes32 => bool) private _trustedDomains;
-
     // ── Constructor ──────────────────────────────────────────
 
     constructor(
@@ -44,25 +43,6 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
     ) Ownable(msg.sender) {
         primus = IPrimusZKTLS(primusAddress);
         maxAttestationAge = _maxAttestationAge;
-
-        _addDomain("reuters.com");
-        _addDomain("apnews.com");
-        _addDomain("sec.gov");
-        _addDomain("coindesk.com");
-        _addDomain("cointelegraph.com");
-        _addDomain("coingecko.com");
-        _addDomain("api.coingecko.com");
-        _addDomain("finance.yahoo.com");
-        _addDomain("api.binance.com");
-        _addDomain("api.coinbase.com");
-        _addDomain("www.okx.com");
-        _addDomain("api.openai.com");
-        _addDomain("api.deepseek.com");
-        _addDomain("api.anthropic.com");
-        _addDomain("api.mistral.ai");
-        _addDomain("generativelanguage.googleapis.com");
-        _addDomain("api.together.xyz");
-        _addDomain("api.groq.com");
     }
 
     // ── Core Verification ────────────────────────────────────
@@ -93,18 +73,11 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
                 "TrustLayer: recipient mismatch"
             );
 
-            // ── Check 3: URL domain in whitelist ───────────────
+            // ── Check 3: timestamp within SLA window ───────────
             require(
                 bytes(att.request.url).length > 0,
                 "TrustLayer: empty request URL"
             );
-            string memory domain = ProofParser.extractDomain(att.request.url);
-            require(
-                _trustedDomains[keccak256(bytes(domain))],
-                string(abi.encodePacked("TrustLayer: untrusted domain: ", domain))
-            );
-
-            // ── Check 4: timestamp within SLA window ───────────
             uint256 attTimestamp = uint256(att.timestamp);
             uint256 attestationAgeMs = block.timestamp * 1000 > attTimestamp
                 ? block.timestamp * 1000 - attTimestamp
@@ -114,7 +87,7 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
                 "TrustLayer: attestation too old"
             );
 
-            // ── Check 5: chain linkage ─────────────────────────
+            // ── Check 4: chain linkage ─────────────────────────
             if (i > 0) {
                 string memory prevData = bundle.steps[i - 1].attestation.data;
                 bytes32 prevDataHash = sha256(bytes(prevData));
@@ -129,14 +102,12 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
             }
 
             // ── Accumulate chain hash ──────────────────────────
-            // Uses the Primus task identifier carried alongside each step,
-            // not a field inside the Primus Attestation struct itself.
             rollingHash = keccak256(
                 abi.encodePacked(rollingHash, step.primusTaskId)
             );
         }
 
-        // ── Check 6: bundle chain hash integrity ───────────────
+        // ── Check 5: bundle chain hash integrity ───────────────
         require(
             rollingHash == bundle.chainHash,
             "TrustLayer: chain hash mismatch"
@@ -145,24 +116,7 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
         return true;
     }
 
-    // ── Domain Whitelist Management ──────────────────────────
-
-    /// @inheritdoc ITrustLayer
-    function isDomainTrusted(string calldata domain) external view override returns (bool) {
-        return _isDomainTrusted(domain);
-    }
-
-    /// @inheritdoc ITrustLayer
-    function addTrustedDomain(string calldata domain) external override onlyOwner {
-        _addDomain(domain);
-    }
-
-    /// @inheritdoc ITrustLayer
-    function removeTrustedDomain(string calldata domain) external override onlyOwner {
-        bytes32 h = keccak256(bytes(domain));
-        _trustedDomains[h] = false;
-        emit DomainRemoved(h);
-    }
+    // ── Admin ────────────────────────────────────────────────
 
     /// @notice Update max attestation age. Owner only.
     function setMaxAttestationAge(uint256 ageSecs) external onlyOwner {
@@ -170,36 +124,6 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
     }
 
     // ── Internal Helpers ─────────────────────────────────────
-
-    function _addDomain(string memory domain) internal {
-        bytes32 h = keccak256(bytes(domain));
-        _trustedDomains[h] = true;
-        emit DomainWhitelisted(h, domain);
-    }
-
-    function _isDomainTrusted(string memory domain) internal view returns (bool) {
-        if (_trustedDomains[keccak256(bytes(domain))]) return true;
-        bytes memory b = bytes(domain);
-        for (uint i = 0; i < b.length; i++) {
-            if (b[i] == ".") {
-                string memory apex = _slice(domain, i + 1, b.length);
-                if (_trustedDomains[keccak256(bytes(apex))]) return true;
-                break;
-            }
-        }
-        return false;
-    }
-
-    function _slice(
-        string memory s,
-        uint start,
-        uint end
-    ) internal pure returns (string memory) {
-        bytes memory b = bytes(s);
-        bytes memory result = new bytes(end - start);
-        for (uint i = 0; i < end - start; i++) result[i] = b[start + i];
-        return string(result);
-    }
 
     function _toString(uint256 value) internal pure returns (string memory) {
         if (value == 0) return "0";
