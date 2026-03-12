@@ -20,6 +20,26 @@ import {
   sha256,
 } from "../../src/index.js";
 
+function parseJsonObject<T extends Record<string, unknown>>(
+  value: unknown,
+): T | null {
+  if (!value) return null;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as T
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  return typeof value === "object" && !Array.isArray(value)
+    ? value as T
+    : null;
+}
+
 // ── Config ────────────────────────────────────────────────────
 
 const PRIMUS_APP_ID     = process.env.PRIMUS_APP_ID!;
@@ -33,21 +53,19 @@ const acpClient = new AcpClient({
   acpContractClient: await buildContractClient(),
 
   onNewTask: async (job) => {
-    console.log(`[TrustLayer] New job ${job.id}: ${job.serviceRequirement.claim}`);
+    const requirement = parseJsonObject<{ claim?: string }>(job.requirement);
+    console.log(`[TrustLayer] New job ${job.id}: ${requirement?.claim ?? "(no claim)"}`);
 
     // Validate input
-    if (!job.serviceRequirement?.claim) {
+    if (!requirement?.claim) {
       await job.reject("Missing required field: claim");
       return;
     }
 
-    await job.createRequirement(
-      JSON.stringify({
-        deliverable: "JSON: { verdict, score, summary, sources, proofBundle }",
-        trustLayer: true,  // Signals to Buyer that TrustLayer proofs will be included
-      }),
-      1.00
-    );
+    await job.createRequirement(JSON.stringify({
+      deliverable: "JSON: { verdict, score, summary, sources, proofBundle }",
+      trustLayer: true,  // Signals to Buyer that TrustLayer proofs will be included
+    }));
   },
 
   onEvaluate: async (job) => {
@@ -57,9 +75,11 @@ const acpClient = new AcpClient({
     //   3. ACP Job calls hook.verifyDeliverable() → proof check + policy.check()
     //
     // The code below is an off-chain fallback for development/testing.
-    const deliverable = JSON.parse(job.deliverable);
+    const deliverable = parseJsonObject<{ proofBundle?: { steps: Array<{ stepId: string }> } }>(
+      await job.getDeliverable(),
+    );
 
-    if (!deliverable.proofBundle) {
+    if (!deliverable?.proofBundle) {
       await job.evaluate(false, "Missing proofBundle in deliverable");
       return;
     }
@@ -87,7 +107,11 @@ await acpClient.init();
 // ── Core Fact Check Logic ─────────────────────────────────────
 
 async function executeFactCheck(job: any): Promise<void> {
-  const claim: string = job.serviceRequirement.claim;
+  const requirement = parseJsonObject<{ claim?: string }>(job.requirement);
+  const claim = requirement?.claim;
+  if (!claim) {
+    throw new Error("Missing required field: claim");
+  }
 
   const builder = new ProofChainBuilder({
     primusAppId:    PRIMUS_APP_ID,
@@ -243,8 +267,8 @@ async function executeFactCheck(job: any): Promise<void> {
 async function buildContractClient() {
   const { AcpContractClientV2 } = await import("@virtuals-protocol/acp-node");
   return AcpContractClientV2.build(
-    process.env.WALLET_PRIVATE_KEY!,
+    process.env.WALLET_PRIVATE_KEY! as `0x${string}`,
     parseInt(process.env.SESSION_ENTITY_KEY_ID!),
-    process.env.AGENT_WALLET_ADDRESS!,
+    process.env.AGENT_WALLET_ADDRESS! as `0x${string}`,
   );
 }
