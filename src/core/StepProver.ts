@@ -2,8 +2,8 @@ import {
   StepConfig,
   StepResult,
   PrimusAttestationResult,
-  TrustLayerError,
-  TrustLayerErrorCode,
+  VeritasError,
+  VeritasErrorCode,
 } from "../types/index.js";
 import { sha256, bodyContainsHash } from "../utils/hash.js";
 import { isTrustedDomain } from "../utils/domain.js";
@@ -84,9 +84,9 @@ export class StepProver {
     }
 
     if (!this.isOfficialAttestation(raw)) {
-      throw new TrustLayerError(
+      throw new VeritasError(
         `Unexpected Primus attestation result shape`,
-        TrustLayerErrorCode.ATTESTATION_INVALID,
+        VeritasErrorCode.ATTESTATION_INVALID,
       );
     }
 
@@ -157,9 +157,9 @@ export class StepProver {
     // If omitted, all domains are allowed at the SDK level.
     // On-chain domain enforcement belongs in IEvaluatorPolicy contracts.
     if (!isTrustedDomain(config.url, this.trustedDomains)) {
-      throw new TrustLayerError(
+      throw new VeritasError(
         `Domain not in configured trustedDomains: ${config.url}`,
-        TrustLayerErrorCode.UNTRUSTED_DOMAIN,
+        VeritasErrorCode.UNTRUSTED_DOMAIN,
         config.stepId,
       );
     }
@@ -178,28 +178,28 @@ export class StepProver {
       const parent = prevSteps[parentId];
 
       if (!parent) {
-        throw new TrustLayerError(
+        throw new VeritasError(
           `dependsOn step "${parentId}" has not been proven yet`,
-          TrustLayerErrorCode.STEP_NOT_FOUND,
+          VeritasErrorCode.STEP_NOT_FOUND,
           config.stepId,
         );
       }
 
       const parentFieldValue = parent.data[sourceField];
       if (!parentFieldValue) {
-        throw new TrustLayerError(
+        throw new VeritasError(
           `Field "${sourceField}" not found in parent step "${parentId}" data`,
-          TrustLayerErrorCode.STEP_NOT_FOUND,
+          VeritasErrorCode.STEP_NOT_FOUND,
           config.stepId,
         );
       }
 
       const parentRawData = parent.attestation.attestation.data;
       if (!bodyContainsHash(body, parentRawData)) {
-        throw new TrustLayerError(
+        throw new VeritasError(
           `Chain linkage broken: body does not contain SHA256(${parentId}.attestation.data). ` +
           `Use buildHashReference() with the parent step's raw attestation data.`,
-          TrustLayerErrorCode.CHAIN_LINKAGE_BROKEN,
+          VeritasErrorCode.CHAIN_LINKAGE_BROKEN,
           config.stepId,
         );
       }
@@ -235,9 +235,9 @@ export class StepProver {
         providerWallet,
       );
     } catch (err: any) {
-      throw new TrustLayerError(
+      throw new VeritasError(
         `Primus generateRequestParams failed: ${err?.message ?? String(err)}`,
-        TrustLayerErrorCode.PRIMUS_INIT_FAILED,
+        VeritasErrorCode.PRIMUS_INIT_FAILED,
         config.stepId,
       );
     }
@@ -252,9 +252,9 @@ export class StepProver {
     try {
       rawAttestResult = await this.primusCore.startAttestation(generateRequest);
     } catch (err: any) {
-      throw new TrustLayerError(
+      throw new VeritasError(
         `Primus startAttestation failed: ${err?.message ?? String(err)}`,
-        TrustLayerErrorCode.PRIMUS_INIT_FAILED,
+        VeritasErrorCode.PRIMUS_INIT_FAILED,
         config.stepId,
       );
     }
@@ -263,9 +263,9 @@ export class StepProver {
     const verificationPayload = this.toVerificationPayload(rawAttestResult);
     const isValid = this.primusCore.verifyAttestation(verificationPayload);
     if (!isValid) {
-      throw new TrustLayerError(
+      throw new VeritasError(
         `Attestation signature invalid for step: ${config.stepId}`,
-        TrustLayerErrorCode.ATTESTATION_INVALID,
+        VeritasErrorCode.ATTESTATION_INVALID,
         config.stepId,
       );
     }
@@ -277,9 +277,9 @@ export class StepProver {
       attestResult.attestation.recipient.toLowerCase() !==
       providerWallet.toLowerCase()
     ) {
-      throw new TrustLayerError(
+      throw new VeritasError(
         `Attestation recipient ${attestResult.attestation.recipient} does not match provider wallet ${providerWallet}`,
-        TrustLayerErrorCode.RECIPIENT_MISMATCH,
+        VeritasErrorCode.RECIPIENT_MISMATCH,
         config.stepId,
       );
     }

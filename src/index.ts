@@ -1,4 +1,4 @@
-// TrustLayer SDK — Public API
+// Veritas SDK — Public API
 // ─────────────────────────────────────────────────────────────
 
 // Core
@@ -26,8 +26,8 @@ export type {
 } from "./types/index.js";
 
 export {
-  TrustLayerError,
-  TrustLayerErrorCode,
+  VeritasError,
+  VeritasErrorCode,
 } from "./types/index.js";
 
 // Utils (useful for bodyBuilder implementations)

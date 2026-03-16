@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────
-//  TrustLayer — Core Types
+//  Veritas — Core Types
 // ─────────────────────────────────────────────────────────────
 
 // ── Primus SDK types ──
@@ -64,7 +64,7 @@ export interface PrimusAttestationResult {
   attestorUrl: string;         // Attestor service URL (goes into attestors[0].url)
 }
 
-// ── TrustLayer Step Config ──────────────────────────────────
+// ── Veritas Step Config ──────────────────────────────────
 
 export type AttestationMode = "proxytls" | "mpctls";
 
@@ -81,7 +81,7 @@ export interface StepConfig {
    * Static body string, OR a builder function that receives
    * the results of previously completed steps.
    * The builder MUST embed the hash of a parent step's data
-   * if dependsOn is set — TrustLayer enforces this.
+   * if dependsOn is set — Veritas enforces this.
    */
   body?: string;
   bodyBuilder?: (prevSteps: Record<string, StepResult>) => string;
@@ -97,7 +97,7 @@ export interface StepConfig {
   mode?: AttestationMode;
 
   /**
-   * If set, TrustLayer will verify that this step's request body
+   * If set, Veritas will verify that this step's request body
    * contains SHA256(prevStep.attestation.data) before attesting.
    * This creates the cryptographic chain linkage that can also be checked
    * by the on-chain verifier. `sourceField` is still useful for validating
@@ -123,13 +123,13 @@ export interface StepResult {
   executedAt: number;
 }
 
-// ── Proof Bundle (submitted in ACP Deliverable Memo) ────────
+// ── Proof Bundle (submitted via protocol adapter / hook) ─────
 
 export interface ProofStep {
   stepId: string;
   /**
    * Primus SDK task identifier copied out of `PrimusAttestationResult.taskId`.
-   * Kept at the TrustLayer step level to avoid implying it belongs to the
+   * Kept at the Veritas step level to avoid implying it belongs to the
    * official Primus on-chain Attestation struct.
    */
   primusTaskId: string;
@@ -164,7 +164,7 @@ export interface ProofChainBuilderConfig {
    * to Primus. If omitted, all domains are allowed at the SDK level.
    *
    * On-chain, domain enforcement is handled by each evaluator's
-   * IEvaluatorPolicy contract — not by TrustLayerVerifier.
+   * IEvaluatorPolicy contract — not by VeritasVerifier.
    */
   trustedDomains?: Iterable<string>;
   /**
@@ -185,18 +185,18 @@ export interface OnChainVerificationResult {
 
 // ── Errors ──────────────────────────────────────────────────
 
-export class TrustLayerError extends Error {
+export class VeritasError extends Error {
   constructor(
     message: string,
-    public readonly code: TrustLayerErrorCode,
+    public readonly code: VeritasErrorCode,
     public readonly stepId?: string,
   ) {
     super(message);
-    this.name = "TrustLayerError";
+    this.name = "VeritasError";
   }
 }
 
-export enum TrustLayerErrorCode {
+export enum VeritasErrorCode {
   ATTESTATION_INVALID          = "ATTESTATION_INVALID",
   CHAIN_LINKAGE_BROKEN         = "CHAIN_LINKAGE_BROKEN",
   UNTRUSTED_DOMAIN             = "UNTRUSTED_DOMAIN",

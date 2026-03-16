@@ -16,7 +16,7 @@ import { ProofBundle, OnChainVerificationResult } from "../types/index.js";
 //     bytes[] signatures;
 //   }
 //
-// On-chain ProofStep layout (from ITrustLayer.sol):
+// On-chain ProofStep layout (from IVeritas.sol):
 //   struct ProofStep {
 //     string stepId;
 //     string primusTaskId;
@@ -44,38 +44,46 @@ const PROOF_BUNDLE_TUPLE =
 
 const VERIFIER_ABI = [
   `function verifyProofBundle(${PROOF_BUNDLE_TUPLE} bundle, address providerAddress) view returns (bool)`,
-  "event TrustLayerVerified(address indexed provider, bytes32 indexed chainHash, uint256 stepCount, uint256 verifiedAt)",
+  "event VeritasVerified(address indexed provider, bytes32 indexed chainHash, uint256 stepCount, uint256 verifiedAt)",
 ];
 
 const HOOK_ABI = [
-  "function registerProvider() external",
-  "function deregisterProvider() external",
   "function setPolicy(address policyContract) external",
   "function removePolicy() external",
   "function evaluatorPolicies(address evaluator) view returns (address)",
-  "function verifyDeliverable(uint256 jobId, address providerAddress, address evaluatorAddress, bytes calldata encodedBundle) external returns (bool)",
+  "function validateJobSubmission(uint256 jobId, bytes calldata encodedBundle) external view returns (bool)",
   "function isProviderVerified(address provider, bytes32 chainHash) external view returns (bool)",
+  "function isJobVerified(uint256 jobId) external view returns (bool)",
+];
+
+const ERC8183_ABI = [
+  "function submit(uint256 jobId, bytes32 deliverable, bytes calldata optParams) external",
+  "function complete(uint256 jobId, bytes32 reason, bytes calldata optParams) external",
+  "function getJob(uint256 jobId) view returns (tuple(uint256 id, address client, address provider, address evaluator, string description, uint256 budget, uint256 expiredAt, uint8 status, address hook))",
 ];
 
 const PRIMUS_ZKTLS_ADDRESS = "0xCE7cefB3B5A7eB44B59F60327A53c9Ce53B0afdE";
 
 export const CONTRACT_ADDRESSES = {
   base_mainnet: {
-    TrustLayerVerifier: "",
-    TrustLayerACPHook: "",
+    VeritasVerifier: "",
+    VeritasERC8183Hook: "",
+    ERC8183AgenticCommerce: "",
     PrimusZKTLS: PRIMUS_ZKTLS_ADDRESS,
   },
   base_sepolia: {
-    TrustLayerVerifier: "0x5D39Ef731fDfd3d49D033724d70be0FD0E31172c",
-    TrustLayerACPHook: "0x1306063A2b701Bc3D5912E36A9dbe414cCbDf385",
+    VeritasVerifier: "0x5D39Ef731fDfd3d49D033724d70be0FD0E31172c",
+    VeritasERC8183Hook: "",
+    ERC8183AgenticCommerce: "",
     PrimusZKTLS: PRIMUS_ZKTLS_ADDRESS,
   },
 } as const;
 
 export type Network = keyof typeof CONTRACT_ADDRESSES;
 export interface ContractAddressOverrides {
-  TrustLayerVerifier?: string;
-  TrustLayerACPHook?: string;
+  VeritasVerifier?: string;
+  VeritasERC8183Hook?: string;
+  ERC8183AgenticCommerce?: string;
   PrimusZKTLS?: string;
 }
 
@@ -84,6 +92,7 @@ export class OnChainSubmitter {
   private signer: ethers.Wallet;
   private verifierAddress?: string;
   private hookAddress?: string;
+  private commerceAddress?: string;
 
   constructor(
     privateKey: string,
@@ -102,8 +111,9 @@ export class OnChainSubmitter {
       Object.entries(overrides ?? {}).filter(([, value]) => Boolean(value)),
     ) as ContractAddressOverrides;
     const addresses = { ...CONTRACT_ADDRESSES[network], ...definedOverrides };
-    this.verifierAddress = addresses.TrustLayerVerifier || undefined;
-    this.hookAddress = addresses.TrustLayerACPHook || undefined;
+    this.verifierAddress = addresses.VeritasVerifier || undefined;
+    this.hookAddress = addresses.VeritasERC8183Hook || undefined;
+    this.commerceAddress = addresses.ERC8183AgenticCommerce || undefined;
   }
 
   /**
@@ -126,24 +136,42 @@ export class OnChainSubmitter {
   }
 
   /**
-   * Submit the ProofBundle to the ACP hook contract (gas required).
-   * The hook will verify proof authenticity AND enforce the evaluator's
-   * on-chain policy in a single automated transaction.
+   * Dry-run an ERC-8183 submission against the Veritas hook.
+   * This checks the same proof + policy logic that will run during `submit()`.
    */
-  async submitBundle(
+  async validateJobSubmission(
     jobId: number | bigint,
     bundle: ProofBundle,
-    providerAddress: string,
-    evaluatorAddress: string,
   ): Promise<OnChainVerificationResult> {
     try {
       const hook = this.getHookContract();
-      const encoded = this.encodeBundleForHook(bundle);
-      const tx = await hook.verifyDeliverable(
+      const result: boolean = await hook.validateJobSubmission(
         jobId,
-        providerAddress,
-        evaluatorAddress,
-        encoded,
+        this.encodeBundleBytes(bundle),
+      );
+      return { verified: result };
+    } catch (err: any) {
+      return { verified: false, error: err.message };
+    }
+  }
+
+  /**
+   * Submit a verified Veritas bundle into an ERC-8183 job.
+   *
+   * The provider should call this while moving a job into `Submitted`.
+   * `deliverable` is the Veritas `bundle.chainHash`, and `optParams`
+   * is the ABI-encoded ProofBundle expected by the hook.
+   */
+  async submitJob(
+    jobId: number | bigint,
+    bundle: ProofBundle,
+  ): Promise<OnChainVerificationResult> {
+    try {
+      const commerce = this.getCommerceContract();
+      const tx = await commerce.submit(
+        jobId,
+        bundle.chainHash,
+        this.encodeBundleBytes(bundle),
       );
       const receipt = await tx.wait();
       return { verified: true, txHash: receipt.hash };
@@ -152,21 +180,24 @@ export class OnChainSubmitter {
     }
   }
 
-  // ── Provider / Evaluator Management ─────────────────────
-
   /**
-   * Register the caller as a TrustLayer-enabled provider on the hook.
+   * Evaluator-side completion helper for ERC-8183 jobs after hook validation.
    */
-  async registerProvider(): Promise<string> {
-    const hook = this.getHookContract();
-    const tx = await hook.registerProvider();
+  async completeJob(
+    jobId: number | bigint,
+    reason: string,
+    optParams = "0x",
+  ): Promise<string> {
+    const commerce = this.getCommerceContract();
+    const reasonHash = ethers.id(reason);
+    const tx = await commerce.complete(jobId, reasonHash, optParams);
     const receipt = await tx.wait();
     return receipt.hash;
   }
 
   /**
    * Point the caller's evaluator slot to a deployed IEvaluatorPolicy contract.
-   * After this, verifyDeliverable automatically calls policy.check() — fully automated.
+   * After this, ERC-8183 hook validation automatically calls `policy.check()`.
    */
   async setPolicy(policyContractAddress: string): Promise<string> {
     const hook = this.getHookContract();
@@ -195,6 +226,19 @@ export class OnChainSubmitter {
   }
 
   /**
+   * Build the exact ERC-8183 `submit()` payload expected by VeritasERC8183Hook.
+   */
+  prepareJobSubmission(bundle: ProofBundle): {
+    deliverable: string;
+    optParams: string;
+  } {
+    return {
+      deliverable: bundle.chainHash,
+      optParams: this.encodeBundleBytes(bundle),
+    };
+  }
+
+  /**
    * Check if a provider's bundle has already been verified on-chain.
    */
   async isVerified(
@@ -205,10 +249,18 @@ export class OnChainSubmitter {
     return hook.isProviderVerified(providerAddress, chainHash);
   }
 
+  /**
+   * Check whether a specific ERC-8183 job has already passed Veritas verification.
+   */
+  async isJobVerified(jobId: number | bigint): Promise<boolean> {
+    const hook = this.getHookContract();
+    return hook.isJobVerified(jobId);
+  }
+
   private getVerifierContract(): ethers.Contract {
     if (!this.verifierAddress) {
       throw new Error(
-        "TrustLayerVerifier address is not configured. Pass it via OnChainSubmitter overrides or deployment config.",
+        "VeritasVerifier address is not configured. Pass it via OnChainSubmitter overrides or deployment config.",
       );
     }
     return new ethers.Contract(this.verifierAddress, VERIFIER_ABI, this.signer);
@@ -217,10 +269,19 @@ export class OnChainSubmitter {
   private getHookContract(): ethers.Contract {
     if (!this.hookAddress) {
       throw new Error(
-        "TrustLayerACPHook address is not configured. Pass it via OnChainSubmitter overrides or deployment config.",
+        "VeritasERC8183Hook address is not configured. Pass it via OnChainSubmitter overrides or deployment config.",
       );
     }
     return new ethers.Contract(this.hookAddress, HOOK_ABI, this.signer);
+  }
+
+  private getCommerceContract(): ethers.Contract {
+    if (!this.commerceAddress) {
+      throw new Error(
+        "ERC8183AgenticCommerce address is not configured. Pass it via OnChainSubmitter overrides or deployment config.",
+      );
+    }
+    return new ethers.Contract(this.commerceAddress, ERC8183_ABI, this.signer);
   }
 
   /**
@@ -274,7 +335,7 @@ export class OnChainSubmitter {
     };
   }
 
-  private encodeBundleForHook(bundle: ProofBundle): string {
+  encodeBundleBytes(bundle: ProofBundle): string {
     const abi = ethers.AbiCoder.defaultAbiCoder();
     return abi.encode([PROOF_BUNDLE_TUPLE], [this.encodeBundle(bundle)]);
   }

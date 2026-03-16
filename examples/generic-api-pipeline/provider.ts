@@ -1,7 +1,7 @@
 /**
  * examples/generic-api-pipeline/provider.ts
  *
- * Generic TrustLayer example:
+ * Generic Veritas example:
  *   Step 1: fetch source data from a trusted HTTPS API
  *   Step 2: send verified source data into a downstream HTTPS scoring API
  *
@@ -28,7 +28,7 @@ export interface GenericPipelineDeliverable {
  *   source data API -> downstream scoring API
  *
  * Notes:
- * - `mode` is omitted on both steps, so TrustLayer defaults to `proxytls`.
+ * - `mode` is omitted on both steps, so Veritas defaults to `proxytls`.
  * - Replace the placeholder URLs with real allowlisted domains in production.
  */
 export async function buildGenericPipelineDeliverable(

@@ -3,7 +3,7 @@
  *
  * Off-chain domain checking is optional and purely a convenience.
  * The authoritative domain enforcement happens in each evaluator's
- * IEvaluatorPolicy contract on-chain (not in TrustLayerVerifier).
+ * IEvaluatorPolicy contract on-chain (not in VeritasVerifier).
  *
  * Providers can pass a custom `trustedDomains` set to ProofChainBuilder
  * for early rejection of typos or misconfigurations. If omitted, no

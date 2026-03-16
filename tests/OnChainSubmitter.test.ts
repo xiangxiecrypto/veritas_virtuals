@@ -2,7 +2,7 @@ import { describe, expect, it } from "@jest/globals";
 
 /**
  * Tests for OnChainSubmitter's HOOK_ABI consistency with the
- * IEvaluatorPolicy-based TrustLayerACPHook contract.
+ * IEvaluatorPolicy-based VeritasERC8183Hook contract.
  *
  * These are structural tests that verify ABI fragments and method
  * existence without requiring a live Ethereum connection.
@@ -15,10 +15,13 @@ describe("OnChainSubmitter — ABI and method consistency", () => {
     expect(typeof submitterProto.setPolicy).toBe("function");
     expect(typeof submitterProto.removePolicy).toBe("function");
     expect(typeof submitterProto.getPolicyAddress).toBe("function");
-    expect(typeof submitterProto.registerProvider).toBe("function");
-    expect(typeof submitterProto.submitBundle).toBe("function");
+    expect(typeof submitterProto.prepareJobSubmission).toBe("function");
+    expect(typeof submitterProto.submitJob).toBe("function");
+    expect(typeof submitterProto.validateJobSubmission).toBe("function");
+    expect(typeof submitterProto.completeJob).toBe("function");
     expect(typeof submitterProto.verifyBundle).toBe("function");
     expect(typeof submitterProto.isVerified).toBe("function");
+    expect(typeof submitterProto.isJobVerified).toBe("function");
   });
 
   it("does NOT export removed methods from the old parameter-based policy model", async () => {
@@ -43,11 +46,13 @@ describe("SDK public exports — policy types", () => {
     expect((mod as any).EvaluatorPolicyConfig).toBeUndefined();
   });
 
-  it("exports OnChainSubmitter with setPolicy/removePolicy", async () => {
+  it("exports OnChainSubmitter with ERC-8183 hook helpers", async () => {
     const { OnChainSubmitter } = await import("../src/index.js");
     expect(typeof OnChainSubmitter.prototype.setPolicy).toBe("function");
     expect(typeof OnChainSubmitter.prototype.removePolicy).toBe("function");
     expect(typeof OnChainSubmitter.prototype.getPolicyAddress).toBe("function");
+    expect(typeof OnChainSubmitter.prototype.submitJob).toBe("function");
+    expect(typeof OnChainSubmitter.prototype.validateJobSubmission).toBe("function");
   });
 });
 

@@ -1,22 +1,22 @@
-# TrustLayer
+# Veritas
 
-> A verifiable proof layer for Virtuals ACP — powered by Primus zkTLS
+> A verifiable execution and data provenance layer for ERC-8183 agent commerce
 
-TrustLayer is a cryptographic middleware that allows ACP Providers to **prove** to Buyers that a sequence of **HTTPS API calls** actually happened as claimed, and that outputs of later calls were derived from earlier verified responses.
+Veritas is a cryptographic verification layer that lets providers in ERC-8183 commerce **prove** that a sequence of **HTTPS API calls** actually happened as claimed, and that later outputs were derived from earlier verified responses.
 
 1. They actually fetched data from a specific real-world HTTPS endpoint (e.g. Reuters, SEC, CoinGecko)
 2. They fed that **exact, unmodified** data into a subsequent HTTPS call (often an LLM API, but not limited to OpenAI)
-3. The final output in their Deliverable Memo is **genuinely what the attested API returned** — not fabricated
+3. The final output attached to the job is **genuinely what the attested API returned** — not fabricated
 
-Every step is attested **off-chain** using [Primus zkTLS](https://primuslabs.xyz) via `@primuslabs/zktls-core-sdk`. The resulting attestation can be verified off-chain in the SDK, and can also be verified on-chain when ACP escrow release needs an on-chain guarantee.
+Every step is attested **off-chain** using [Primus zkTLS](https://primuslabs.xyz) via `@primuslabs/zktls-core-sdk`. The resulting attestation can be verified off-chain in the SDK, and can also be verified on-chain inside an ERC-8183 hook before escrow completion.
 
 ---
 
 ## The Problem
 
-In Virtuals ACP, a Provider submits a `Deliverable Memo` — but nothing in the protocol prevents them from fabricating the result. A Fact Check agent could return `{"verdict":"True","score":95}` without ever calling a real data source or LLM. The escrow would still release.
+In agent commerce, a provider can submit a deliverable hash without proving how the result was produced. A fact-check agent could return `{"verdict":"True","score":95}` without ever calling a real data source or LLM. Escrow could still release if the evaluator accepts.
 
-TrustLayer fixes this at the **cryptographic layer**, not at the reputation layer.
+Veritas fixes this at the **cryptographic layer**, not at the reputation layer.
 
 ---
 
@@ -26,13 +26,13 @@ TrustLayer fixes this at the **cryptographic layer**, not at the reputation laye
 ┌──────────────────────────────────────────────────────────────┐
 │  Layer 5: Evaluator Policy Contracts (IEvaluatorPolicy)      │
 │  Each evaluator deploys custom Solidity logic.               │
-│  TrustLayerACPHook calls policy.check() automatically.       │
+│  VeritasERC8183Hook calls policy.check() automatically.     │
 └───────────────────────────┬──────────────────────────────────┘
                             │ fully automated evaluation
 ┌───────────────────────────▼──────────────────────────────────┐
 │  Layer 4: On-chain Verification (Base Chain)                 │
-│  TrustLayerVerifier.sol ──► IPrimusZKTLS.verifyAttestation   │
-│  TrustLayerACPHook.sol ──► proof check + policy.check()      │
+│  VeritasVerifier.sol ──► IPrimusZKTLS.verifyAttestation     │
+│  VeritasERC8183Hook.sol ──► submit hook + policy.check()    │
 └───────────────────────────┬──────────────────────────────────┘
                             │ on-chain verification
 ┌───────────────────────────▼──────────────────────────────────┐
@@ -57,9 +57,9 @@ TrustLayer fixes this at the **cryptographic layer**, not at the reputation laye
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### What TrustLayer Proves vs Cannot Prove
+### What Veritas Proves vs Cannot Prove
 
-| Threat | TrustLayer Defence |
+| Threat | Veritas Defence |
 |---|---|
 | Provider fabricates data source | Attestation_1 cryptographically proves HTTP response came from a real domain |
 | Provider tampers data before sending to LLM | Attestation_2 body must contain SHA256(Attestation_1.data) — tampering breaks the hash |
@@ -74,7 +74,7 @@ TrustLayer fixes this at the **cryptographic layer**, not at the reputation laye
 ## Repository Structure
 
 ```
-trust-layer/
+veritas/
 ├── src/
 │   ├── core/
 │   │   ├── ProofChainBuilder.ts     # Main SDK entry point
@@ -87,23 +87,32 @@ trust-layer/
 │       ├── hash.ts                  # SHA256 / chain hash utilities
 │       └── domain.ts                # Domain extraction & validation
 ├── contracts/
-│   ├── TrustLayerVerifier.sol       # Core on-chain verifier
-│   ├── TrustLayerACPHook.sol        # ACP Job integration hook
+│   ├── VeritasVerifier.sol        # Core on-chain verifier
+│   ├── VeritasERC8183Hook.sol     # ERC-8183 hook integration
 │   ├── interfaces/
 │   │   ├── IPrimusZKTLS.sol         # Primus attestation interface
-│   │   ├── ITrustLayer.sol          # TrustLayer public interface
-│   │   └── IEvaluatorPolicy.sol     # Evaluator policy interface
+│   │   ├── IVeritas.sol           # Veritas public interface
+│   │   ├── IEvaluatorPolicy.sol     # Evaluator policy interface
+│   │   ├── IACPHook.sol             # ERC-8183 hook interface name used upstream
+│   │   └── IAgenticCommerce.sol     # Minimal ERC-8183 core interface
 │   ├── policies/
 │   │   └── FactCheckPolicy.sol      # Reference evaluator policy
+│   │   └── TokenAnalysisPolicy.sol  # Token analysis evaluator policy
 │   └── libraries/
 │       └── ProofParser.sol          # ABI decode helpers
 ├── examples/
 │   ├── fact-check/
-│   │   ├── provider.ts              # Full ArAIstotle-style example
-│   │   └── evaluator.ts             # Buyer-side evaluation example
+│   │   ├── provider.ts              # Fact-check deliverable builder
+│   │   └── evaluator.ts             # ERC-8183 evaluation helpers
 │   └── generic-api-pipeline/
 │       ├── provider.ts              # Generic HTTPS source -> scoring pipeline
-│       └── evaluator.ts             # Generic buyer-side verification example
+│       └── evaluator.ts             # Generic ERC-8183 verification helpers
+│   └── token-analysis/
+│       ├── provider.ts              # CoinGecko -> GLM-5 token analysis provider
+│       ├── buyer.ts                 # Consumer-side review/status helpers
+│       ├── evaluator.ts             # ERC-8183 submission helpers
+│       ├── indicators.ts            # Local RSI/MACD/Bollinger/MA calculations
+│       └── coingecko.ts             # CoinGecko asset + series helpers
 ├── docs/
 │   ├── ARCHITECTURE.md              # Deep-dive architecture doc
 │   └── INTEGRATION_GUIDE.md         # Provider & evaluator integration guide
@@ -112,6 +121,12 @@ trust-layer/
 └── .env.example
 ```
 
+## Documentation
+
+- `docs/ARCHITECTURE.md`: current Veritas + ERC-8183 architecture deep dive
+- `docs/INTEGRATION_GUIDE.md`: current end-to-end integration guide
+- `docs/VERIFICATION_TRACE.md`: historical decoded verification trace from the earlier ACP-era demo
+
 ---
 
 ## Quick Start
@@ -119,13 +134,13 @@ trust-layer/
 ### 1. Install
 
 ```bash
-npm install @trust-layer/sdk
+npm install @veritas/sdk
 ```
 
 ### 2. Provider: Generate a Proof Chain
 
 ```typescript
-import { ProofChainBuilder } from "@trust-layer/sdk";
+import { ProofChainBuilder } from "@veritas/sdk";
 
 const builder = new ProofChainBuilder({
   primusAppId: process.env.PRIMUS_APP_ID!,
@@ -172,12 +187,12 @@ await builder.addStep({
 
 const proofBundle = await builder.build();
 
-// Attach to ACP Deliverable Memo
-await job.deliver(JSON.stringify({
+// Attach to your off-chain report or job metadata
+const deliverable = JSON.stringify({
   verdict: "Partially True",
   score: 62,
-  proofBundle,   // <-- TrustLayer proof chain
-}));
+  proofBundle,   // <-- Veritas proof chain
+});
 ```
 
 ### 3. Evaluator: Deploy a Policy Contract (one-time)
@@ -189,7 +204,7 @@ Solidity verification logic, then registers it on the hook:
 // Example: FactCheckPolicy — requires data_source + llm_inference steps
 contract FactCheckPolicy is IEvaluatorPolicy {
     function check(
-        ITrustLayer.ProofBundle calldata bundle,
+        IVeritas.ProofBundle calldata bundle,
         address provider
     ) external view returns (bool) {
         require(bundle.steps.length >= 2, "need 2 steps");
@@ -200,30 +215,39 @@ contract FactCheckPolicy is IEvaluatorPolicy {
 ```
 
 ```typescript
-import { OnChainSubmitter } from "@trust-layer/sdk";
+import { OnChainSubmitter } from "@veritas/sdk";
 
 const submitter = new OnChainSubmitter(privateKey, "base_sepolia", undefined, {
-  TrustLayerACPHook: hookAddress,
+  VeritasERC8183Hook: hookAddress,
 });
 
 // One-time: point evaluator to the deployed policy contract
 await submitter.setPolicy(factCheckPolicyAddress);
 ```
 
-After `setPolicy()`, all `verifyDeliverable()` calls for this evaluator are
+After `setPolicy()`, all ERC-8183 `submit()` calls routed through the hook are
 fully automated — the hook checks proof authenticity and calls `policy.check()`.
+
+### Token Analysis Example
+
+The repository also includes a `token_analysis` example service:
+
+- `examples/token-analysis/provider.ts`: attests CoinGecko market data, computes RSI/MACD/Bollinger Bands/moving averages/volume signals locally, then attests a GLM-5 analysis step.
+- `examples/token-analysis/buyer.ts`: consumer-side helpers for reviewing token analysis deliverables and checking on-chain verification status.
+- `contracts/policies/TokenAnalysisPolicy.sol`: verifies `data_source` + `llm_inference`, CoinGecko / GLM domains, and attestation freshness on-chain.
 
 ### 4. On-chain Verification Flow
 
 ```
-verifyDeliverable(jobId, provider, evaluator, bundle)
-  ├─ TrustLayerVerifier.verifyProofBundle(bundle, provider)   // proof authenticity
+submit(jobId, bundle.chainHash, encodedBundle)
+  ├─ ERC-8183 core calls VeritasERC8183Hook.beforeAction(...)
+  ├─ VeritasVerifier.verifyProofBundle(bundle, provider)   // proof authenticity
   ├─ IEvaluatorPolicy(evaluator).check(bundle, provider)      // business logic
-  └─ cache result → escrow can release
+  └─ cache result → evaluator can safely complete escrow
 ```
 
 You can also verify attestations off-chain with the Primus core-sdk before ever
-calling a contract. TrustLayer uses that off-chain verification path during
+calling a contract. Veritas uses that off-chain verification path during
 proof generation already.
 
 ### 5. Reference Policy Contracts
@@ -241,20 +265,21 @@ See `contracts/policies/` for reference implementations.
 
 | Contract | Address |
 |---|---|
-| TrustLayerVerifier (Base Sepolia) | `0x5D39Ef731fDfd3d49D033724d70be0FD0E31172c` |
-| TrustLayerACPHook (Base Sepolia) | `0x1306063A2b701Bc3D5912E36A9dbe414cCbDf385` |
+| VeritasVerifier (Base Sepolia) | `0x5D39Ef731fDfd3d49D033724d70be0FD0E31172c` |
+| VeritasERC8183Hook (Base Sepolia) | `deploy your own against your ERC-8183 core` |
 | FactCheckPolicy (Base Sepolia) | `0xDbbD7239947Bfe3320e98B937CDBF7553Bceb0Bd` |
 | Primus zkTLS Verifier (Base mainnet & Sepolia) | `0xCE7cefB3B5A7eB44B59F60327A53c9Ce53B0afdE` |
 
-See `docs/VERIFICATION_TRACE.md` for a full decoded verification trace covering:
+See `docs/VERIFICATION_TRACE.md` for a full decoded verification trace covering
 off-chain API requests, attestation payloads, on-chain bundle submission, and the
-final `Hook + Verifier + Policy` result.
+final `Hook + Verifier + Policy` result. That document currently reflects an older
+ACP-era demo and is kept as historical reference only.
 
 ---
 
 ## Domain Policy
 
-TrustLayer supports **any HTTPS API**. There is no global domain whitelist at the
+Veritas supports **any HTTPS API**. There is no global domain whitelist at the
 verifier level.
 
 Domain restrictions are a **business rule** managed by each evaluator in their
@@ -270,7 +295,7 @@ own domain whitelist and checks every step's URL against it.
 
 ## Default TLS Mode
 
-TrustLayer defaults to `proxytls`.
+Veritas defaults to `proxytls`.
 
 Use `mpctls` only when you explicitly set `mode: "mpctls"` for a step and are
 comfortable with the additional latency.
@@ -281,8 +306,8 @@ comfortable with the additional latency.
 
 | Phase | Description |
 |---|---|
-| **Phase 1** (Now) | TrustLayer SDK + contracts deployed independently. Providers opt-in by calling `registerProvider()`. No changes to ACP contracts required |
-| **Phase 2** | Evaluators deploy `IEvaluatorPolicy` contracts and call `setPolicy()`. Verification is fully automated on-chain — proof authenticity + business rules enforced in a single tx |
+| **Phase 1** (Now) | Veritas SDK + contracts deployed independently alongside an ERC-8183 `AgenticCommerce` deployment |
+| **Phase 2** | Evaluators deploy `IEvaluatorPolicy` contracts and call `setPolicy()`. Verification runs automatically during ERC-8183 `submit()` |
 | **Phase 3** | Ecosystem adoption: more evaluator policies, more providers, community-contributed policy templates |
 
 ---

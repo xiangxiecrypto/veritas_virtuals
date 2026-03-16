@@ -7,10 +7,10 @@
  * Environment variables:
  *   WALLET_PRIVATE_KEY              — deployer & evaluator wallet
  *   POLICY_CONTRACT                 — artifact name (default: FactCheckPolicy)
- *   POLICY_MAX_AGE_SECS            — constructor arg for FactCheckPolicy (default: 600)
- *   POLICY_TRUSTED_DOMAINS         — comma-separated domain list for FactCheckPolicy
- *   TRUST_LAYER_ACP_HOOK_ADDRESS   — if set, auto-registers the policy on the hook
- *   BASE_SEPOLIA_TRUST_LAYER_ACP_HOOK_ADDRESS — network-specific override
+ *   POLICY_MAX_AGE_SECS            — constructor arg for FactCheckPolicy / TokenAnalysisPolicy (default: 600)
+ *   POLICY_TRUSTED_DOMAINS         — comma-separated domain list for FactCheckPolicy / TokenAnalysisPolicy
+ *   VERITAS_8183_HOOK_ADDRESS   — if set, auto-registers the policy on the hook
+ *   BASE_SEPOLIA_VERITAS_8183_HOOK_ADDRESS — network-specific override
  */
 const hre = require("hardhat");
 const { ethers } = require("ethers");
@@ -47,7 +47,10 @@ async function main() {
   );
 
   let policy;
-  if (policyName === "FactCheckPolicy") {
+  if (
+    policyName === "FactCheckPolicy" ||
+    policyName === "TokenAnalysisPolicy"
+  ) {
     const domainsStr = process.env.POLICY_TRUSTED_DOMAINS ?? "";
     const domains = domainsStr
       ? domainsStr.split(",").map((d) => d.trim()).filter(Boolean)
@@ -65,10 +68,10 @@ async function main() {
 
   const hookAddress = resolveNetworkEnv(
     hre.network.name,
-    "TRUST_LAYER_ACP_HOOK_ADDRESS",
+    "VERITAS_8183_HOOK_ADDRESS",
   );
   if (hookAddress) {
-    console.log("Registering policy on TrustLayerACPHook...");
+    console.log("Registering policy on VeritasERC8183Hook...");
     const hookAbi = [
       "function setPolicy(address policyContract) external",
     ];
@@ -78,7 +81,7 @@ async function main() {
     console.log("Policy registered on hook. TX:", tx.hash);
   } else {
     console.log(
-      "TRUST_LAYER_ACP_HOOK_ADDRESS not set — skipping hook registration.",
+      "VERITAS_8183_HOOK_ADDRESS not set — skipping hook registration.",
       "Call hook.setPolicy() manually to activate.",
     );
   }

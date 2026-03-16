@@ -3,8 +3,8 @@ import {
   StepResult,
   ProofBundle,
   ProofChainBuilderConfig,
-  TrustLayerError,
-  TrustLayerErrorCode,
+  VeritasError,
+  VeritasErrorCode,
 } from "../types/index.js";
 import { computeChainHash } from "../utils/hash.js";
 import { StepProver } from "./StepProver.js";
@@ -12,14 +12,14 @@ import { StepProver } from "./StepProver.js";
 /**
  * ProofChainBuilder
  *
- * The main entry point for TrustLayer. Providers use this class to:
+ * The main entry point for Veritas. Providers use this class to:
  *  1. Register ordered proof steps (generic HTTPS API calls)
  *  2. Execute them in sequence with chain linkage enforcement
- *  3. Build a ProofBundle to include in the ACP Deliverable Memo
+ *  3. Build a ProofBundle to attach through a protocol adapter or hook
  *
  * Each step's attestation is generated off-chain through
  * `@primuslabs/zktls-core-sdk`. The resulting bundle can later be verified
- * off-chain again, or optionally verified on-chain by TrustLayer contracts.
+ * off-chain again, or optionally verified on-chain by Veritas contracts.
  *
  * Example:
  *
@@ -60,13 +60,13 @@ export class ProofChainBuilder {
     try {
       ({ PrimusCoreTLS } = await import("@primuslabs/zktls-core-sdk"));
     } catch (err: any) {
-      throw new TrustLayerError(
+      throw new VeritasError(
         [
           "Primus SDK is not available in this environment.",
           "Install/build the optional dependency `@primuslabs/zktls-core-sdk` to generate attestations.",
           `Original error: ${err?.message ?? String(err)}`,
         ].join(" "),
-        TrustLayerErrorCode.PRIMUS_INIT_FAILED,
+        VeritasErrorCode.PRIMUS_INIT_FAILED,
       );
     }
     this.primus = new PrimusCoreTLS();
@@ -89,9 +89,9 @@ export class ProofChainBuilder {
     // Validate dependency ordering
     if (config.dependsOn) {
       if (!this.stepResults[config.dependsOn.stepId]) {
-        throw new TrustLayerError(
+        throw new VeritasError(
           `Step "${config.stepId}" depends on "${config.dependsOn.stepId}" which hasn't been added yet`,
-          TrustLayerErrorCode.STEP_NOT_FOUND,
+          VeritasErrorCode.STEP_NOT_FOUND,
           config.stepId,
         );
       }
@@ -117,9 +117,9 @@ export class ProofChainBuilder {
   getStepResult(stepId: string): StepResult {
     const result = this.stepResults[stepId];
     if (!result) {
-      throw new TrustLayerError(
+      throw new VeritasError(
         `Step "${stepId}" has not been executed`,
-        TrustLayerErrorCode.STEP_NOT_FOUND,
+        VeritasErrorCode.STEP_NOT_FOUND,
       );
     }
     return result;
@@ -127,14 +127,14 @@ export class ProofChainBuilder {
 
   /**
    * Build the final ProofBundle.
-   * This is what gets embedded in the ACP Deliverable Memo
+   * This is what gets embedded in the protocol submission payload
    * and submitted to the on-chain verifier.
    */
   async build(): Promise<ProofBundle> {
     if (this.stepConfigs.length === 0) {
-      throw new TrustLayerError(
+      throw new VeritasError(
         "Cannot build an empty ProofBundle — add at least one step",
-        TrustLayerErrorCode.ATTESTATION_INVALID,
+        VeritasErrorCode.ATTESTATION_INVALID,
       );
     }
 

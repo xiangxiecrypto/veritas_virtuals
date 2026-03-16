@@ -3,12 +3,12 @@ pragma solidity ^0.8.20;
 
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { IPrimusZKTLS, Attestation } from "./interfaces/IPrimusZKTLS.sol";
-import { ITrustLayer } from "./interfaces/ITrustLayer.sol";
+import { IVeritas } from "./interfaces/IVeritas.sol";
 import { ProofParser } from "./libraries/ProofParser.sol";
 
 /**
- * @title TrustLayerVerifier
- * @notice On-chain verifier for TrustLayer proof bundles.
+ * @title VeritasVerifier
+ * @notice On-chain verifier for Veritas proof bundles.
  *
  * Responsible ONLY for cryptographic proof verification:
  *   1. Primus attestation signature is valid
@@ -19,12 +19,13 @@ import { ProofParser } from "./libraries/ProofParser.sol";
  *
  * Domain whitelists, step requirements, and other business-level rules
  * are NOT enforced here. Those belong in IEvaluatorPolicy contracts
- * deployed by individual evaluators and called by TrustLayerACPHook.
+ * deployed by individual evaluators and called by a protocol integration hook
+ * such as VeritasERC8183Hook.
  *
  * The Attestation struct matches the official Primus zkTLS contract:
  * https://github.com/primus-labs/zktls-contracts/blob/main/src/IPrimusZKTLS.sol
  */
-contract TrustLayerVerifier is ITrustLayer, Ownable {
+contract VeritasVerifier is IVeritas, Ownable {
     using ProofParser for string;
     using ProofParser for bytes32;
 
@@ -32,7 +33,7 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
 
     IPrimusZKTLS public immutable primus;
 
-    /// @inheritdoc ITrustLayer
+    /// @inheritdoc IVeritas
     uint256 public maxAttestationAge;
 
     // ── Constructor ──────────────────────────────────────────
@@ -47,15 +48,15 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
 
     // ── Core Verification ────────────────────────────────────
 
-    /// @inheritdoc ITrustLayer
+    /// @inheritdoc IVeritas
     function verifyProofBundle(
         ProofBundle calldata bundle,
         address providerAddress
     ) external view override returns (bool) {
-        require(bundle.steps.length > 0, "TrustLayer: empty proof bundle");
+        require(bundle.steps.length > 0, "Veritas: empty proof bundle");
         require(
             bundle.providerWallet == providerAddress,
-            "TrustLayer: provider wallet mismatch"
+            "Veritas: provider wallet mismatch"
         );
 
         bytes32 rollingHash;
@@ -70,13 +71,13 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
             // ── Check 2: recipient == provider wallet ──────────
             require(
                 att.recipient == providerAddress,
-                "TrustLayer: recipient mismatch"
+                "Veritas: recipient mismatch"
             );
 
             // ── Check 3: timestamp within SLA window ───────────
             require(
                 bytes(att.request.url).length > 0,
-                "TrustLayer: empty request URL"
+                "Veritas: empty request URL"
             );
             uint256 attTimestamp = uint256(att.timestamp);
             uint256 attestationAgeMs = block.timestamp * 1000 > attTimestamp
@@ -84,7 +85,7 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
                 : 0;
             require(
                 attestationAgeMs <= maxAttestationAge * 1000,
-                "TrustLayer: attestation too old"
+                "Veritas: attestation too old"
             );
 
             // ── Check 4: chain linkage ─────────────────────────
@@ -96,7 +97,7 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
                 require(
                     ProofParser.containsHash(reqBody, prevDataHash),
                     string(abi.encodePacked(
-                        "TrustLayer: chain linkage broken at step ", _toString(i)
+                        "Veritas: chain linkage broken at step ", _toString(i)
                     ))
                 );
             }
@@ -110,7 +111,7 @@ contract TrustLayerVerifier is ITrustLayer, Ownable {
         // ── Check 5: bundle chain hash integrity ───────────────
         require(
             rollingHash == bundle.chainHash,
-            "TrustLayer: chain hash mismatch"
+            "Veritas: chain hash mismatch"
         );
 
         return true;

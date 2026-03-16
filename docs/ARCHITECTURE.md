@@ -1,358 +1,234 @@
-# TrustLayer — Architecture Deep Dive
+# Veritas — Architecture Deep Dive
 
-## The Core Problem
+## Overview
 
-Virtuals ACP's `Deliverable Memo` is just a signed JSON payload. It proves that
-a Provider submitted *something*, but it does not prove that the Provider
-actually called the HTTPS APIs they claim to have used, nor that later results
-were derived from earlier verified data.
+Veritas is a provenance and verification layer for agent commerce. It proves
+that a provider actually called specific HTTPS endpoints, and that later steps
+in a workflow were derived from earlier verified results.
 
-TrustLayer answers this question:
+The current on-chain integration target in this repository is ERC-8183.
 
-**How do you prove that a deliverable genuinely came from a specific sequence of
-HTTPS API calls?**
+## Design Goals
 
-This applies to many workflows:
+- Prove real HTTPS data origin
+- Prove cross-step dependency between requests
+- Keep proof verification separate from business logic
+- Let evaluators define their own policies
+- Integrate cleanly with escrow protocols through hooks
 
-- fetch market data, then call a risk engine
-- fetch a private dataset, then call an LLM
-- fetch a custody balance, then call a portfolio analyzer
-- fetch news, then call a fact-checking or summarization model
+## Layered Model
 
-The system is intentionally **general-purpose**. Fact check is only one example.
+```text
+Layer 5: IEvaluatorPolicy contracts
+  Workflow-specific business rules
 
----
+Layer 4: On-chain integration
+  VeritasVerifier
+  VeritasERC8183Hook
 
-## Trust Model
+Layer 3: Provider runtime
+  ProofChainBuilder
+  StepProver
 
-### What TrustLayer Does NOT Trust
+Layer 2: Attestation engine
+  @primuslabs/zktls-core-sdk
 
-- The Provider process itself
-- The Provider's claims about which APIs were called
-- Any off-chain logs or traces submitted by the Provider
-- A Buyer's ability to manually inspect every intermediate result
+Layer 1: External HTTPS APIs
+  CoinGecko, Reuters, LLM endpoints, internal APIs
+```
 
-### What TrustLayer DOES Trust
-
-- **Primus core-sdk attestation format and verifier logic**
-- **TLS certificates** and the standard HTTPS trust model
-- **SHA-256** for chain linkage between steps
-- **Base** when optional on-chain verification is required
-
----
-
-## Proof Chain Mechanics
+## Proof Model
 
 ### Single Step
 
-A single TrustLayer step proves one HTTPS request-response pair.
-In the enterprise/core-sdk model, the proof is generated **off-chain** by the
-Provider runtime:
+A single step is one HTTPS request/response pair attested by Primus zkTLS.
 
-```
-┌────────────────────────────────────────────────────────┐
-│ Provider runtime                                       │
-│   └─ @primuslabs/zktls-core-sdk                        │
-│        ├─ init(appId, appSecret)                       │
-│        ├─ generateRequestParams(...)                   │
-│        ├─ setAttMode(...)                              │
-│        ├─ startAttestation(...)                        │
-│        └─ verifyAttestation(...)                       │
-│                                                        │
-│ Output: Attestation { request, data, timestamp, ... }  │
-└────────────────────────────────────────────────────────┘
-```
+Each step captures:
 
-This attestation proves that the response was produced by the attested HTTPS
-endpoint at that time, under a valid TLS session, and that the returned data
-was not fabricated locally by the Provider.
+- request URL, headers, method, and body
+- attested response-derived `data`
+- timestamp
+- attestor metadata
+- signature material
 
-### Chain Linkage
+### Linked Steps
 
-TrustLayer becomes powerful when multiple steps are linked together.
+Later steps can depend on earlier steps by embedding a hash anchor into the
+downstream request body.
 
-Step `B` must include `SHA256(stepA.data[sourceField])` inside its request body.
-That creates a cryptographic dependency between the two steps.
-
-```
-Step A:
-  url = "https://api.example.com/source"
-  data = '{"source_value":"abc"}'
-  dataHash = SHA256(data) = "abc123..."
-
-Step B:
-  url = "https://api.example.com/transform"
-  request.body contains "[source_hash:step_a:abc123...]"
+```text
+step A -> attestation.data
+step B -> request.body contains SHA256(stepA.attestation.data)
 ```
 
-On-chain verification, if used, checks:
+This prevents silent tampering between steps.
 
-1. `SHA256(stepA.attestation.data)` is the expected hash anchor
-2. that hash appears inside `stepB.attestation.request.body`
-3. both attestations are valid Primus proofs
+### Bundle Integrity
 
-If the Provider swaps the input, edits the intermediate payload, or calls the
-downstream API with different data, the hash link breaks and verification fails.
+Multiple steps are wrapped into a `ProofBundle`.
 
----
+Bundle-level integrity is enforced with:
 
-## Why This Is General
+- ordered `steps`
+- `providerWallet`
+- `builtAt`
+- `chainHash`
 
-TrustLayer does **not** assume that the second step is an LLM.
+`chainHash` is computed from the ordered `primusTaskId` values and becomes the
+canonical identity of the bundle in the ERC-8183 submission flow.
 
-Step `B` may be:
+## Off-chain Components
 
-- another data API
-- an internal risk/scoring service
-- an LLM endpoint
-- a compliance engine
-- an analytics or simulation API
+### `ProofChainBuilder`
 
-The only requirement is that the call is made over HTTPS. Domain restrictions,
-if any, are defined by each evaluator in their `IEvaluatorPolicy` contract.
+`ProofChainBuilder` is the main SDK entry point. It:
 
----
+- initializes Primus core SDK
+- adds attested steps
+- enforces cross-step body linkage
+- accumulates step results
+- builds the final `ProofBundle`
 
-## Attack Vectors and Defenses
+### `StepProver`
 
-### Attack 1: Fabricate a source response
+`StepProver` handles one step at a time. It:
 
-The Provider invents a response and claims it came from a real API.
+- optionally checks trusted domains off-chain
+- builds request parameters for Primus
+- runs the attestation
+- verifies the attestation off-chain
+- parses extracted data fields
 
-**Defense**: The off-chain attestation binds the request, response, and
-timestamp. Local fabrication will fail SDK verification and optional on-chain
-verification.
+## On-chain Components
 
-### Attack 2: Tamper with intermediate data
+### `VeritasVerifier`
 
-The Provider fetches real data, then modifies it before sending it to the next
-API.
+`VeritasVerifier` only checks proof authenticity.
 
-**Defense**: Chain linkage. The downstream request body must contain the hash of
-the upstream verified data. Any modification changes the hash and breaks the
-proof chain.
+It verifies:
 
-### Attack 3: Call a fake downstream service
+1. Primus attestation signatures
+2. recipient matches provider wallet
+3. attestation freshness
+4. cross-step chain linkage
+5. bundle `chainHash` integrity
 
-The Provider replaces a trusted downstream API with a local or malicious one.
+It deliberately does **not** verify:
 
-**Defense**: The attestation proves which HTTPS domain was contacted. Each
-evaluator's `IEvaluatorPolicy` contract can enforce a domain whitelist to
-reject calls to untrusted endpoints.
+- trusted domains
+- required step ids
+- scoring thresholds
+- workflow-specific semantics
 
-### Attack 4: Replay an old proof bundle
+### `IEvaluatorPolicy`
 
-The Provider reuses a previously valid bundle.
+`IEvaluatorPolicy` is the business-rule extension point.
 
-**Defense**: The verifier checks the attestation timestamp against
-`maxAttestationAge`. Old proofs are rejected.
+Each evaluator can deploy an arbitrary contract implementing:
 
-### Attack 5: Swap the recipient address
-
-The Provider generates a proof for a different wallet and attempts to reuse it.
-
-**Defense**: The attestation recipient must match the Provider wallet address
-passed into the verifier.
-
-### Attack 6: Skip external verification
-
-The Provider generates an attestation but hopes nobody independently verifies
-it.
-
-**Defense**: TrustLayer supports two validation modes:
-
-- off-chain verification with `verifyAttestation()` in the SDK
-- optional on-chain verification via `TrustLayerVerifier`
-
-ACP integrations that need escrow-level guarantees should use the on-chain path.
-
-### Residual Risk: Correctness of reasoning
-
-TrustLayer proves that:
-
-- a request hit a real HTTPS endpoint
-- a later request depended on earlier verified data
-- the final output came from the attested downstream API
-
-TrustLayer does **not** prove that:
-
-- an LLM's reasoning is correct
-- a model did not hallucinate
-- a business decision built on verified data is logically sound
-
-That residual risk exists for any model or downstream compute service. The proof
-layer establishes provenance, not universal correctness.
-
----
-
-## On-chain Verification Flow
-
-```
-Optional on-chain path:
-  Buyer or ACP hook calls TrustLayerVerifier.verifyProofBundle(bundle, providerAddress)
-
-For each step in bundle.steps:
-  1. primus.verifyAttestation(att)         -> attestation signature valid
-  2. att.recipient == providerAddress      -> correct provider
-  3. att.timestamp within max age window   -> not stale
-  4. if step index > 0:
-       SHA256(prevStep.data) in current request body -> chain intact
-
-After all steps:
-  5. rollingKeccak(all step.primusTaskId values) == bundle.chainHash  -> bundle unmodified
-
-Note: domain whitelisting is NOT part of the verifier. Domain checks belong
-in each evaluator's IEvaluatorPolicy contract (see below).
+```solidity
+function check(
+    IVeritas.ProofBundle calldata bundle,
+    address provider
+) external view returns (bool passed);
 ```
 
-`bundle.chainHash` is a rolling `keccak256` over all `step.primusTaskId`
-values and must match the verifier's computation exactly. These ids come from
-the Primus SDK result and are carried by TrustLayer at the step level; they are
-not fields inside the official Primus on-chain `Attestation` struct.
+Typical checks:
 
-## Evaluator Policy Architecture
+- require `data_source` and `llm_inference`
+- only allow trusted domains
+- enforce stricter freshness windows
+- validate extracted fields or step counts
 
-TrustLayerACPHook delegates business-level verification to external
-**IEvaluatorPolicy** contracts. Each evaluator deploys their own Solidity
-contract that implements a single `check(bundle, provider)` function:
+### `VeritasERC8183Hook`
 
-```
-┌──────────────────────────┐
-│   ACP Job Contract       │
-│     ↓ onEvaluate         │
-├──────────────────────────┤
-│   TrustLayerACPHook      │
-│     1. proof authenticity │ ← TrustLayerVerifier
-│     2. policy.check()    │ ← IEvaluatorPolicy (evaluator's contract)
-│     3. cache result      │
-└──────────────────────────┘
-```
+This hook integrates Veritas into ERC-8183 job submission and completion.
 
-### Why interface-based policies?
+Expected submission convention:
 
-- **Full freedom**: Any Solidity logic — step requirements, domain checks,
-  cross-step data validation, custom scoring, time-dependent rules.
-- **Low deployment cost**: A minimal policy contract is ~200 lines. Deploy once
-  and register via `hook.setPolicy(address)`.
-- **Isolated upgrades**: Evaluator deploys a new contract and calls
-  `setPolicy()` again. Other evaluators are unaffected.
-- **Composability**: Policies can call other contracts, oracles, or libraries.
+- `deliverable == bundle.chainHash`
+- `optParams == abi.encode(bundle)`
 
-### Lifecycle
+On `submit()` the hook:
 
-1. Evaluator writes a contract implementing `IEvaluatorPolicy`.
-2. Evaluator deploys it (one transaction).
-3. Evaluator calls `hook.setPolicy(contractAddress)` (one transaction).
-4. From this point, all `verifyDeliverable()` calls for this evaluator
-   are **fully automated** — the hook calls the policy contract and the
-   result determines escrow release.
+1. decodes the bundle from `optParams`
+2. checks `deliverable == bundle.chainHash`
+3. reads the job from ERC-8183 core
+4. validates provider alignment
+5. calls `VeritasVerifier.verifyProofBundle(...)`
+6. calls evaluator policy if configured
+7. caches successful verification state
 
-See `contracts/policies/FactCheckPolicy.sol` for a reference implementation.
+On `complete()` the hook:
 
----
+- requires that the job has already passed Veritas verification
 
-## Primus SDK Integration
+## ERC-8183 Boundary
 
-TrustLayer's SDK integration is built around
-`@primuslabs/zktls-core-sdk` and follows the standard flow described in the
-Primus docs:
+ERC-8183 owns:
 
-1. `init(appId, appSecret)`
-2. `generateRequestParams(request, responseResolves)`
-3. `setAttMode({ algorithmType })`
-4. `startAttestation(generateRequest)`
-5. `verifyAttestation(attestation)`
+- job lifecycle
+- escrow
+- role separation between client/provider/evaluator
+- `submit()` and `complete()` transitions
 
-Reference: [Primus core-sdk simple example](https://docs.primuslabs.xyz/enterprise/core-sdk/simpleexample)
+Veritas owns:
 
-This is an **enterprise/off-chain** integration pattern.
-TrustLayer does not require the Primus decentralized zkTLS network to generate
-proofs in this mode.
+- proof generation
+- proof encoding
+- proof verification
+- policy execution inside the hook
 
----
+This separation keeps Veritas reusable across protocols.
 
-## Verification Modes
+## Domain Enforcement
 
-TrustLayer supports two verification layers:
+There is no global verifier-level domain whitelist.
 
-### Off-chain Verification
+Reason:
 
-This is the default enterprise/core-sdk path.
+- different evaluators trust different endpoints
+- different workflows need different policies
+- protocol flexibility is higher when business logic stays modular
 
-- the Provider runtime generates the attestation
-- the SDK immediately validates it with `verifyAttestation()`
-- a Buyer or backend service can repeat the same validation off-chain
+SDK-side `trustedDomains` is optional and only for early local rejection.
+Authoritative on-chain domain rules belong in `IEvaluatorPolicy`.
 
-### On-chain Verification
+## Threat Model
 
-This is optional and is only needed when you want the blockchain itself to gate
-state transitions such as escrow release.
+### Veritas defends against
 
-- `IPrimusZKTLS.verifyAttestation(attestation)` validates the attestation
-- `TrustLayerVerifier` adds bundle-level checks: recipient, timestamp
-  freshness, and step linkage
-- `IEvaluatorPolicy` contracts add business rules: domain whitelists,
-  required steps, scoring, etc.
+- fabricated source responses
+- tampering between steps
+- fake downstream API claims
+- replay of stale proofs
+- provider wallet substitution
+- bundle replacement after generation
 
----
+### Veritas does not prove
 
-## Default TLS Mode
+- that an LLM answer is correct
+- that model reasoning is sound
+- that a trading or compliance decision is optimal
 
-TrustLayer now defaults to **`proxytls`**.
+Veritas proves provenance and execution integrity, not semantic correctness.
 
-Why:
+## Example Workflow
 
-- it is faster
-- it is easier to use in production ACP flows
-- it is more likely to fit realistic SLA constraints
+The token analysis example in this repository follows this pattern:
 
-Use `mpctls` only when you explicitly decide the extra privacy/security is worth
-the latency cost.
+1. attested CoinGecko market data fetch
+2. local computation of indicators
+3. attested GLM-5 analysis request using source hash anchor
+4. final report plus `proofBundle`
+5. ERC-8183 submission through `VeritasERC8183Hook`
 
-Practical rule:
+## Relevant Files
 
-- `proxytls` for most HTTPS APIs, including most provider pipelines
-- `mpctls` only for rare, highly sensitive authenticated calls
-
----
-
-## Gas Cost Estimates (Base L2)
-
-| Operation | Estimated Gas | Cost @ 0.01 gwei |
-|---|---|---|
-| `verifyAttestation` (1 step) | ~80,000 | ~$0.001 |
-| `verifyProofBundle` (2 steps) | ~200,000 | ~$0.002 |
-| `verifyProofBundle` (5 steps) | ~450,000 | ~$0.005 |
-| `verifyDeliverable` (proof + policy) | ~300,000 | ~$0.003 |
-| Deploy a minimal policy contract | ~200,000 | ~$0.002 |
-| `setPolicy()` (one-time) | ~50,000 | ~$0.0005 |
-
-On Base L2, full verification is cheap enough to gate escrow without materially
-changing the economics of most ACP jobs. Deploying a new policy contract is a
-one-time cost and is comparable to a single verification call.
-
----
-
-## Contract Relationships
-
-```
-┌──────────────────────┐   ┌────────────────────┐
-│  TrustLayerVerifier  │   │  IPrimusZKTLS      │
-│  verifyProofBundle() │──►│  verifyAttestation()│
-│  timestamp checks    │   └────────────────────┘
-│  chain linkage       │
-└──────────┬───────────┘
-           │ called by
-┌──────────▼───────────┐   ┌────────────────────┐
-│  TrustLayerACPHook   │   │  IEvaluatorPolicy  │
-│  verifyDeliverable() │──►│  check()           │
-│  provider registry   │   │  (per-evaluator)   │
-│  result cache        │   └────────────────────┘
-└──────────────────────┘
-           │ called by
-┌──────────▼───────────┐
-│  ACP Job Contract    │
-│  onEvaluate()        │
-│  escrow release      │
-└──────────────────────┘
-```
+- `contracts/VeritasVerifier.sol`
+- `contracts/VeritasERC8183Hook.sol`
+- `contracts/interfaces/IVeritas.sol`
+- `contracts/interfaces/IEvaluatorPolicy.sol`
+- `src/core/ProofChainBuilder.ts`
+- `src/core/StepProver.ts`
+- `src/chain/OnChainSubmitter.ts`

@@ -18,13 +18,13 @@ function resolveNetworkEnv(network, key) {
 }
 
 async function main() {
-  const network = process.env.TRUST_LAYER_NETWORK ?? "base_sepolia";
+  const network = process.env.VERITAS_NETWORK ?? "base_sepolia";
   if (network !== "base_mainnet" && network !== "base_sepolia") {
-    throw new Error("TRUST_LAYER_NETWORK must be base_mainnet or base_sepolia");
+    throw new Error("VERITAS_NETWORK must be base_mainnet or base_sepolia");
   }
 
   const rpcUrl =
-    process.env.TRUST_LAYER_RPC_URL ||
+    process.env.VERITAS_RPC_URL ||
     (network === "base_mainnet"
       ? process.env.BASE_RPC_URL
       : process.env.BASE_SEPOLIA_RPC_URL);
@@ -36,14 +36,14 @@ async function main() {
     throw new Error("ZAI_API_KEY is required");
   }
 
-  const trustLayerVerifierAddress = resolveNetworkEnv(
+  const veritasVerifierAddress = resolveNetworkEnv(
     network,
-    "TRUST_LAYER_VERIFIER_ADDRESS",
+    "VERITAS_VERIFIER_ADDRESS",
   );
-  if (!trustLayerVerifierAddress) {
+  if (!veritasVerifierAddress) {
     throw new Error(
-      "TRUST_LAYER_VERIFIER_ADDRESS is required. " +
-      "You can also set BASE_SEPOLIA_TRUST_LAYER_VERIFIER_ADDRESS or BASE_MAINNET_TRUST_LAYER_VERIFIER_ADDRESS.",
+      "VERITAS_VERIFIER_ADDRESS is required. " +
+      "You can also set BASE_SEPOLIA_VERITAS_VERIFIER_ADDRESS or BASE_MAINNET_VERITAS_VERIFIER_ADDRESS.",
     );
   }
 
@@ -127,20 +127,22 @@ async function main() {
     model: llmStep.data["model_used"],
   });
 
-  const hookAddress = resolveNetworkEnv(network, "TRUST_LAYER_ACP_HOOK_ADDRESS");
+  const hookAddress = resolveNetworkEnv(network, "VERITAS_8183_HOOK_ADDRESS");
+  const commerceAddress = resolveNetworkEnv(network, "ERC8183_AGENTIC_COMMERCE_ADDRESS");
 
   const submitter = new OnChainSubmitter(
     requireEnv("WALLET_PRIVATE_KEY"),
     network,
     rpcUrl,
     {
-      TrustLayerVerifier: trustLayerVerifierAddress,
-      TrustLayerACPHook: hookAddress,
+      VeritasVerifier: veritasVerifierAddress,
+      VeritasERC8183Hook: hookAddress,
+      ERC8183AgenticCommerce: commerceAddress,
     },
   );
 
-  // ── Verify proof authenticity via TrustLayerVerifier ──────
-  console.log("[live-test] Verifying bundle against deployed TrustLayerVerifier...");
+  // ── Verify proof authenticity via VeritasVerifier ──────
+  console.log("[live-test] Verifying bundle against deployed VeritasVerifier...");
   const result = await submitter.verifyBundle(
     bundle,
     requireEnv("AGENT_WALLET_ADDRESS"),
@@ -151,30 +153,29 @@ async function main() {
   }
   console.log("[live-test] Proof authenticity: passed");
 
-  // ── Test hook + evaluator policy flow (if hook is deployed) ──
+  // ── Test ERC-8183 hook + evaluator policy flow (if configured) ──
   if (hookAddress) {
-    const evaluatorAddress = process.env.EVALUATOR_ADDRESS;
-    if (evaluatorAddress) {
-      console.log("[live-test] Checking evaluator policy address...");
-      const policyAddr = await submitter.getPolicyAddress(evaluatorAddress);
-      console.log(`[live-test] Evaluator policy contract: ${policyAddr}`);
-
-      console.log("[live-test] Submitting bundle via hook.verifyDeliverable...");
-      const hookResult = await submitter.submitBundle(
-        0,
-        bundle,
-        requireEnv("AGENT_WALLET_ADDRESS"),
-        evaluatorAddress,
-      );
-      if (!hookResult.verified) {
-        throw new Error(`Hook verification failed: ${hookResult.error}`);
+    const jobIdRaw = process.env.ERC8183_JOB_ID;
+    if (jobIdRaw) {
+      const jobId = BigInt(jobIdRaw);
+      const validation = await submitter.validateJobSubmission(jobId, bundle);
+      if (!validation.verified) {
+        throw new Error(`ERC-8183 hook validation failed: ${validation.error}`);
       }
-      console.log(`[live-test] Hook verification: passed. TX: ${hookResult.txHash}`);
+      console.log("[live-test] ERC-8183 hook validation: passed");
+
+      if (commerceAddress && process.env.ERC8183_SUBMIT_LIVE === "true") {
+        const submitResult = await submitter.submitJob(jobId, bundle);
+        if (!submitResult.verified) {
+          throw new Error(`ERC-8183 submit failed: ${submitResult.error}`);
+        }
+        console.log(`[live-test] ERC-8183 submit: passed. TX: ${submitResult.txHash}`);
+      }
     } else {
-      console.log("[live-test] EVALUATOR_ADDRESS not set — skipping hook + policy test");
+      console.log("[live-test] ERC8183_JOB_ID not set — skipping hook validation");
     }
   } else {
-    console.log("[live-test] TRUST_LAYER_ACP_HOOK_ADDRESS not set — skipping hook test");
+    console.log("[live-test] VERITAS_8183_HOOK_ADDRESS not set — skipping hook test");
   }
 
   console.log("[live-test] All tests passed");

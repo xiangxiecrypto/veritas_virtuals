@@ -1,43 +1,28 @@
 /**
  * examples/fact-check/provider.ts
  *
- * Full example: ArAIstotle-style Fact Check ACP Provider
- * integrated with TrustLayer.
- *
- * Flow:
- *  1. Receive ACP Job (onNewTask)
- *  2. Use ProofChainBuilder to:
- *     a. Prove real data source fetch (Reuters)
- *     b. Prove LLM inference call (GPT-4o), referencing step (a) by hash
- *  3. Build ProofBundle
- *  4. Submit Deliverable Memo with proof bundle attached
+ * Veritas fact-check provider example:
+ *   1. Fetch source data from a news API
+ *   2. Send the verified source into an LLM
+ *   3. Build a proof bundle that can later be submitted through ERC-8183
  */
 
-import AcpClient from "@virtuals-protocol/acp-node";
 import {
   ProofChainBuilder,
   buildHashReference,
-  sha256,
 } from "../../src/index.js";
 
-function parseJsonObject<T extends Record<string, unknown>>(
-  value: unknown,
-): T | null {
-  if (!value) return null;
-  if (typeof value === "string") {
-    try {
-      const parsed = JSON.parse(value);
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? parsed as T
-        : null;
-    } catch {
-      return null;
-    }
-  }
-
-  return typeof value === "object" && !Array.isArray(value)
-    ? value as T
-    : null;
+export interface FactCheckDeliverable {
+  verdict: string;
+  score: number;
+  summary: string;
+  model_used: string;
+  sources: Array<{
+    title: string;
+    url: string;
+    verified_at: number;
+  }>;
+  proofBundle: Awaited<ReturnType<ProofChainBuilder["build"]>>;
 }
 
 // ── Config ────────────────────────────────────────────────────
@@ -47,72 +32,9 @@ const PRIMUS_APP_SECRET = process.env.PRIMUS_APP_SECRET!;
 const PROVIDER_WALLET   = process.env.AGENT_WALLET_ADDRESS!;
 const OPENAI_API_KEY    = process.env.OPENAI_API_KEY!;
 
-// ── ACP Provider Setup ────────────────────────────────────────
-
-const acpClient = new AcpClient({
-  acpContractClient: await buildContractClient(),
-
-  onNewTask: async (job) => {
-    const requirement = parseJsonObject<{ claim?: string }>(job.requirement);
-    console.log(`[TrustLayer] New job ${job.id}: ${requirement?.claim ?? "(no claim)"}`);
-
-    // Validate input
-    if (!requirement?.claim) {
-      await job.reject("Missing required field: claim");
-      return;
-    }
-
-    await job.createRequirement(JSON.stringify({
-      deliverable: "JSON: { verdict, score, summary, sources, proofBundle }",
-      trustLayer: true,  // Signals to Buyer that TrustLayer proofs will be included
-    }));
-  },
-
-  onEvaluate: async (job) => {
-    // In production, evaluation is fully automated on-chain:
-    //   1. Deploy a FactCheckPolicy contract (see contracts/policies/FactCheckPolicy.sol)
-    //   2. Call hook.setPolicy(policyAddress) once
-    //   3. ACP Job calls hook.verifyDeliverable() → proof check + policy.check()
-    //
-    // The code below is an off-chain fallback for development/testing.
-    const deliverable = parseJsonObject<{ proofBundle?: { steps: Array<{ stepId: string }> } }>(
-      await job.getDeliverable(),
-    );
-
-    if (!deliverable?.proofBundle) {
-      await job.evaluate(false, "Missing proofBundle in deliverable");
-      return;
-    }
-
-    console.log(`[TrustLayer] Verifying proof bundle with ${deliverable.proofBundle.steps.length} steps`);
-
-    const hasDataSource = deliverable.proofBundle.steps.some(
-      (s: any) => s.stepId === "data_source"
-    );
-    const hasLLMInference = deliverable.proofBundle.steps.some(
-      (s: any) => s.stepId === "llm_inference"
-    );
-
-    if (!hasDataSource || !hasLLMInference) {
-      await job.evaluate(false, "ProofBundle missing required steps");
-      return;
-    }
-
-    await job.evaluate(true, "TrustLayer proof bundle verified");
-  },
-});
-
-await acpClient.init();
-
-// ── Core Fact Check Logic ─────────────────────────────────────
-
-async function executeFactCheck(job: any): Promise<void> {
-  const requirement = parseJsonObject<{ claim?: string }>(job.requirement);
-  const claim = requirement?.claim;
-  if (!claim) {
-    throw new Error("Missing required field: claim");
-  }
-
+export async function buildFactCheckDeliverable(
+  claim: string,
+): Promise<FactCheckDeliverable> {
   const builder = new ProofChainBuilder({
     primusAppId:    PRIMUS_APP_ID,
     primusAppSecret: PRIMUS_APP_SECRET,
@@ -120,14 +42,14 @@ async function executeFactCheck(job: any): Promise<void> {
   });
 
   // ── Step 1: Fetch and prove real data source ──────────────
-  console.log("[TrustLayer] Step 1: Proving data source fetch...");
+  console.log("[Veritas] Step 1: Proving data source fetch...");
 
   const dataSourceResult = await builder.addStep({
     stepId: "data_source",
     url: `https://reuters.com/api/search?q=${encodeURIComponent(claim)}`,
     method: "GET",
     headers: {
-      "User-Agent": "TrustLayer-Agent/1.0",
+      "User-Agent": "Veritas-Agent/1.0",
     },
     responseResolves: [
       {
@@ -149,13 +71,13 @@ async function executeFactCheck(job: any): Promise<void> {
     // mode omitted -> defaults to proxytls
   });
 
-  console.log(`[TrustLayer] Data source proven. Hash: ${dataSourceResult.dataHash.slice(0, 16)}...`);
+  console.log(`[Veritas] Data source proven. Hash: ${dataSourceResult.dataHash.slice(0, 16)}...`);
 
   const articleContent = dataSourceResult.data["article_content"] ?? "";
   const articleTitle   = dataSourceResult.data["article_title"] ?? "(no title)";
 
   // ── Step 2: LLM inference with chain linkage ──────────────
-  console.log("[TrustLayer] Step 2: Proving LLM inference...");
+  console.log("[Veritas] Step 2: Proving LLM inference...");
 
   const llmResult = await builder.addStep({
     stepId: "llm_inference",
@@ -195,7 +117,7 @@ async function executeFactCheck(job: any): Promise<void> {
               ``,
               `SOURCE ARTICLE: "${articleTitle}"`,
               `---`,
-              articleContent.slice(0, 4000), // Truncate to stay within token limits
+              articleContent.slice(0, 4000),
               `---`,
               ``,
               `CLAIM TO VERIFY: "${claim}"`,
@@ -234,17 +156,15 @@ async function executeFactCheck(job: any): Promise<void> {
     ],
     dependsOn: {
       stepId: "data_source",
-      sourceField: "article_content",  // Validates the app-level dependency
+      sourceField: "article_content",
     },
   });
 
-  console.log(`[TrustLayer] LLM inference proven. Verdict: ${llmResult.data["verdict"]}`);
+  console.log(`[Veritas] LLM inference proven. Verdict: ${llmResult.data["verdict"]}`);
 
-  // ── Build final proof bundle ──────────────────────────────
   const proofBundle = await builder.build();
 
-  // ── Submit ACP Deliverable Memo ───────────────────────────
-  const deliverable = {
+  return {
     verdict:    llmResult.data["verdict"],
     score:      parseInt(llmResult.data["score"]),
     summary:    llmResult.data["summary"],
@@ -256,19 +176,6 @@ async function executeFactCheck(job: any): Promise<void> {
         verified_at: dataSourceResult.attestation.attestation.timestamp,
       },
     ],
-    // The proof bundle is what enables on-chain verification
     proofBundle,
   };
-
-  await job.deliver(JSON.stringify(deliverable));
-  console.log(`[TrustLayer] Delivered. Chain hash: ${proofBundle.chainHash}`);
-}
-
-async function buildContractClient() {
-  const { AcpContractClientV2 } = await import("@virtuals-protocol/acp-node");
-  return AcpContractClientV2.build(
-    process.env.WALLET_PRIVATE_KEY! as `0x${string}`,
-    parseInt(process.env.SESSION_ENTITY_KEY_ID!),
-    process.env.AGENT_WALLET_ADDRESS! as `0x${string}`,
-  );
 }

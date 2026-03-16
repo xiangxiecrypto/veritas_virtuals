@@ -1,29 +1,22 @@
 /**
  * examples/fact-check/evaluator.ts
  *
- * Buyer-side evaluator for a fact-check ACP Job.
+ * Evaluator-side helpers for ERC-8183 fact-check jobs.
  *
- * Setup flow (one-time):
- *   1. Deploy a FactCheckPolicy contract (see contracts/policies/FactCheckPolicy.sol)
- *   2. Call hook.setPolicy(factCheckPolicyAddress)
+ * Setup:
+ *   1. Deploy `FactCheckPolicy`
+ *   2. Call `hook.setPolicy(policyAddress)` from the evaluator wallet
  *
- * Runtime flow (fully automated, zero human intervention):
- *   1. Provider delivers a proof bundle
- *   2. ACP Job calls hook.verifyDeliverable(...)
- *   3. Hook verifies proof authenticity via TrustLayerVerifier
- *   4. Hook calls FactCheckPolicy.check(bundle, provider)
- *   5. If both pass → escrow releases
+ * Runtime:
+ *   1. Provider prepares a deliverable and Veritas proof bundle
+ *   2. Provider submits the job with `deliverable == bundle.chainHash`
+ *   3. VeritasERC8183Hook verifies proof authenticity + evaluator policy
+ *   4. Evaluator may safely complete the job escrow
  */
 
 import { OnChainSubmitter } from "../../src/chain/OnChainSubmitter.js";
 import { ProofBundle } from "../../src/types/index.js";
 
-// ── Phase 1: One-time setup ─────────────────────────────────
-
-/**
- * Register the evaluator's policy contract address on the hook.
- * The policy contract (e.g. FactCheckPolicy) must already be deployed.
- */
 export async function setupEvaluator(
   policyContractAddress: string,
 ): Promise<string> {
@@ -31,7 +24,7 @@ export async function setupEvaluator(
     process.env.BUYER_PRIVATE_KEY!,
     "base_sepolia",
     undefined,
-    { TrustLayerACPHook: process.env.TRUST_LAYER_ACP_HOOK_ADDRESS },
+    { VeritasERC8183Hook: process.env.VERITAS_8183_HOOK_ADDRESS },
   );
 
   const txHash = await submitter.setPolicy(policyContractAddress);
@@ -39,12 +32,6 @@ export async function setupEvaluator(
   return txHash;
 }
 
-// ── Phase 2: Automated verification ──────────────────────────
-
-/**
- * Optional off-chain pre-check. Lightweight validation that can run
- * in the evaluator's runtime without touching the chain.
- */
 export async function evaluateDeliverable(deliverableJson: string): Promise<{
   accept: boolean;
   reason: string;
@@ -85,14 +72,11 @@ export async function evaluateDeliverable(deliverableJson: string): Promise<{
 }
 
 /**
- * Submit to the on-chain hook for fully automated verification.
- * The hook enforces proof authenticity + evaluator policy in one tx.
+ * Dry-run the same ERC-8183 hook validation that will execute during submit().
  */
-export async function evaluateOnChain(
+export async function validateFactCheckSubmission(
   deliverableJson: string,
-  providerAddress: string,
-  evaluatorAddress: string,
-  jobId: number | bigint = 0,
+  jobId: number | bigint,
 ): Promise<{ verified: boolean; txHash?: string; error?: string }> {
   const deliverable = JSON.parse(deliverableJson);
   const bundle: ProofBundle = deliverable.proofBundle;
@@ -102,46 +86,39 @@ export async function evaluateOnChain(
     "base_sepolia",
     undefined,
     {
-      TrustLayerVerifier: process.env.TRUST_LAYER_VERIFIER_ADDRESS,
-      TrustLayerACPHook: process.env.TRUST_LAYER_ACP_HOOK_ADDRESS,
+      VeritasVerifier: process.env.VERITAS_VERIFIER_ADDRESS,
+      VeritasERC8183Hook: process.env.VERITAS_8183_HOOK_ADDRESS,
     },
   );
 
-  const dryRun = await submitter.verifyBundle(bundle, providerAddress);
+  return submitter.validateJobSubmission(jobId, bundle);
+}
+
+/**
+ * Provider-side helper: submit the deliverable/bundle into an ERC-8183 job.
+ */
+export async function submitFactCheckJob(
+  deliverableJson: string,
+  jobId: number | bigint,
+): Promise<{ verified: boolean; txHash?: string; error?: string }> {
+  const deliverable = JSON.parse(deliverableJson);
+  const bundle: ProofBundle = deliverable.proofBundle;
+
+  const submitter = new OnChainSubmitter(
+    process.env.WALLET_PRIVATE_KEY!,
+    "base_sepolia",
+    undefined,
+    {
+      VeritasVerifier: process.env.VERITAS_VERIFIER_ADDRESS,
+      VeritasERC8183Hook: process.env.VERITAS_8183_HOOK_ADDRESS,
+      ERC8183AgenticCommerce: process.env.ERC8183_AGENTIC_COMMERCE_ADDRESS,
+    },
+  );
+
+  const dryRun = await submitter.validateJobSubmission(jobId, bundle);
   if (!dryRun.verified) {
     return { verified: false, error: dryRun.error };
   }
 
-  return submitter.submitBundle(jobId, bundle, providerAddress, evaluatorAddress);
-}
-
-// ── Example ACP onEvaluate integration ───────────────────────
-
-export function createEvaluator(evaluatorAddress: string, onChain = false) {
-  return async (job: any) => {
-    const { accept, reason } = await evaluateDeliverable(job.deliverable);
-
-    if (!accept) {
-      console.log(`[Buyer] Rejecting: ${reason}`);
-      await job.evaluate(false, reason);
-      return;
-    }
-
-    if (onChain) {
-      const result = await evaluateOnChain(
-        job.deliverable,
-        job.providerAddress,
-        evaluatorAddress,
-      );
-      if (!result.verified) {
-        await job.evaluate(false, `On-chain verification failed: ${result.error}`);
-        return;
-      }
-      console.log(`[Buyer] On-chain verified. TX: ${result.txHash}`);
-    }
-
-    const deliverable = JSON.parse(job.deliverable);
-    console.log(`[Buyer] Accepting. Verdict: ${deliverable.verdict}, Score: ${deliverable.score}`);
-    await job.evaluate(true, `Verified. Verdict: ${deliverable.verdict}`);
-  };
+  return submitter.submitJob(jobId, bundle);
 }

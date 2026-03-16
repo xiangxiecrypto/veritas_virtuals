@@ -11,7 +11,7 @@ export function sha256(input: string): string {
 
 /**
  * Compute the chain hash for a ProofBundle.
- * This matches the on-chain computation in `TrustLayerVerifier.sol`:
+ * This matches the on-chain computation in `VeritasVerifier.sol`:
  * `rollingHash = keccak256(abi.encodePacked(rollingHash, step.primusTaskId))`.
  *
  * The return value is a bytes32 hex string with `0x` prefix.

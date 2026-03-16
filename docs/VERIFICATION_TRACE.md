@@ -1,9 +1,11 @@
 # Verification Trace
 
+> Historical verification trace for the earlier ACP integration. The repository now targets ERC-8183 hooks by default; this document is retained only as a decoded reference for that older demo path.
+
 This document records one complete Base Sepolia verification run that successfully
 executed the full path:
 
-`provider registration -> TrustLayerVerifier -> TrustLayerACPHook -> FactCheckPolicy`
+`provider registration -> verifier -> ACP integration hook -> FactCheckPolicy`
 
 All sensitive values are redacted. Transaction hashes, contract addresses, decoded
 payloads, and verification outcomes are preserved for demonstration purposes.
@@ -12,8 +14,8 @@ payloads, and verification outcomes are preserved for demonstration purposes.
 
 | Component | Address |
 |---|---|
-| TrustLayerVerifier | `0x5D39Ef731fDfd3d49D033724d70be0FD0E31172c` |
-| TrustLayerACPHook | `0x1306063A2b701Bc3D5912E36A9dbe414cCbDf385` |
+| VeritasVerifier | `0x5D39Ef731fDfd3d49D033724d70be0FD0E31172c` |
+| VeritasACPHook | `0x1306063A2b701Bc3D5912E36A9dbe414cCbDf385` |
 | FactCheckPolicy | `0xDbbD7239947Bfe3320e98B937CDBF7553Bceb0Bd` |
 | Primus zkTLS Verifier | `0xCE7cefB3B5A7eB44B59F60327A53c9Ce53B0afdE` |
 | Provider wallet | `0x89BBf3451643eef216c3A60d5B561c58F0D8adb9` |
@@ -27,7 +29,7 @@ payloads, and verification outcomes are preserved for demonstration purposes.
 
 ## Pre-Verification State
 
-- `trustLayerEnabled(provider) = false`
+- `veritasEnabled(provider) = false`
 - `evaluatorPolicies(provider) = 0xDbbD7239947Bfe3320e98B937CDBF7553Bceb0Bd`
 - `FactCheckPolicy.maxAgeSecs() = 600`
 - `FactCheckPolicy.trustedDomains(keccak256("api.coinbase.com")) = true`
@@ -35,7 +37,7 @@ payloads, and verification outcomes are preserved for demonstration purposes.
 
 After `registerProvider()`:
 
-- `trustLayerEnabled(provider) = true`
+- `veritasEnabled(provider) = true`
 
 ## Step 1: Coinbase Price Attestation
 
@@ -178,7 +180,7 @@ After `registerProvider()`:
 
 The successful verification transaction called:
 
-- Contract: `TrustLayerACPHook`
+- Contract: `VeritasACPHook`
 - Address: `0x1306063A2b701Bc3D5912E36A9dbe414cCbDf385`
 - Function: `verifyDeliverable(uint256 jobId, address providerAddress, address evaluatorAddress, bytes encodedBundle)`
 - Transaction hash: `0x1d5d9e70ec5b9a54af1b908f0988af5b339ac28cbc7d4a6f16223eb408f4f472`
@@ -205,7 +207,7 @@ The successful verification transaction called:
 
 ## What Was Verified
 
-### `TrustLayerVerifier`
+### `VeritasVerifier`
 
 The on-chain verifier checked:
 
@@ -239,7 +241,7 @@ For this run, the domains checked were:
 - gas used: `419391`
 - emitted event: `DeliverableVerified`
 - final cache state:
-  - `trustLayerEnabled(provider) = true`
+  - `veritasEnabled(provider) = true`
   - `evaluatorPolicies(provider) = 0xDbbD7239947Bfe3320e98B937CDBF7553Bceb0Bd`
   - `isProviderVerified(provider, chainHash) = true`
 
@@ -258,7 +260,7 @@ For this run, the domains checked were:
 ## Notes
 
 - In this recorded demo run, the same EOA was used as both `providerAddress` and
-  the `evaluatorAddress` lookup key on `TrustLayerACPHook`.
+  the `evaluatorAddress` lookup key on `VeritasACPHook`.
 - The policy contract actually enforcing business rules was
   `0xDbbD7239947Bfe3320e98B937CDBF7553Bceb0Bd`.
 - In production, it is usually cleaner to let `evaluatorAddress` be an evaluator

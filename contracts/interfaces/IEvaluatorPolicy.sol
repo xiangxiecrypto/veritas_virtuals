@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import { ITrustLayer } from "./ITrustLayer.sol";
+import { IVeritas } from "./IVeritas.sol";
 
 /**
  * @title IEvaluatorPolicy
  * @notice Interface that every evaluator policy contract must implement.
  *
  * Each evaluator deploys their own contract with arbitrary verification logic.
- * The TrustLayerACPHook calls `check()` after proof authenticity has been
- * confirmed by the TrustLayerVerifier. If `check()` reverts or returns false,
+ * The Veritas ERC-8183 hook calls `check()` after proof authenticity has been
+ * confirmed by the VeritasVerifier. If `check()` reverts or returns false,
  * the deliverable is rejected.
  *
  * This gives evaluators full freedom to define any on-chain conditions:
@@ -22,7 +22,7 @@ import { ITrustLayer } from "./ITrustLayer.sol";
  *
  *   contract FactCheckPolicy is IEvaluatorPolicy {
  *       function check(
- *           ITrustLayer.ProofBundle calldata bundle,
+ *           IVeritas.ProofBundle calldata bundle,
  *           address provider
  *       ) external view returns (bool) {
  *           require(bundle.steps.length >= 2, "need 2 steps");
@@ -35,7 +35,7 @@ interface IEvaluatorPolicy {
     /**
      * @notice Evaluate whether a proof bundle satisfies this policy.
      *
-     * Called by TrustLayerACPHook AFTER TrustLayerVerifier has already
+     * Called by the Veritas ERC-8183 hook AFTER VeritasVerifier has already
      * confirmed proof authenticity. The policy only needs to check
      * business-level requirements.
      *
@@ -44,7 +44,7 @@ interface IEvaluatorPolicy {
      * @return passed   True if the bundle satisfies this evaluator's policy
      */
     function check(
-        ITrustLayer.ProofBundle calldata bundle,
+        IVeritas.ProofBundle calldata bundle,
         address provider
     ) external view returns (bool passed);
 }
