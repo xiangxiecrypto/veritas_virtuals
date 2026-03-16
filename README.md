@@ -24,17 +24,25 @@ Veritas fixes this at the **cryptographic layer**, not at the reputation layer.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  Layer 5: Evaluator Policy Contracts (IEvaluatorPolicy)      │
+│  Layer 6: Evaluator Policy Contracts (IEvaluatorPolicy)      │
 │  Each evaluator deploys custom Solidity logic.               │
-│  VeritasERC8183Hook calls policy.check() automatically.     │
+│  VeritasERC8183Hook calls policy.check() automatically.      │
 └───────────────────────────┬──────────────────────────────────┘
                             │ fully automated evaluation
 ┌───────────────────────────▼──────────────────────────────────┐
-│  Layer 4: On-chain Verification (Base Chain)                 │
-│  VeritasVerifier.sol ──► IPrimusZKTLS.verifyAttestation     │
-│  VeritasERC8183Hook.sol ──► submit hook + policy.check()    │
+│  Layer 5: On-chain Verification (Base Chain)                 │
+│  VeritasVerifier.sol ──► IPrimusZKTLS.verifyAttestation      │
+│  VeritasERC8183Hook.sol ──► verify bundle + policy.check()   │
 └───────────────────────────┬──────────────────────────────────┘
-                            │ on-chain verification
+                            │ hook callbacks
+┌───────────────────────────▼──────────────────────────────────┐
+│  Layer 4: ERC-8183 AgenticCommerce                           │
+│  AgenticCommerce.sol / AgenticCommerceHooked.sol             │
+│  ├── Job escrow: client / provider / evaluator               │
+│  ├── submit(jobId, deliverable, optParams)                   │
+│  └── complete(jobId, reason, optParams)                      │
+└───────────────────────────┬──────────────────────────────────┘
+                            │ job deliverable + optParams
 ┌───────────────────────────▼──────────────────────────────────┐
 │  Layer 3: Proof Chain Builder (Provider runtime)             │
 │  ProofChainBuilder.ts                                        │
@@ -56,6 +64,7 @@ Veritas fixes this at the **cryptographic layer**, not at the reputation layer.
 │  reuters.com / sec.gov / api.openai.com / api.z.ai / api.anthropic.com │
 └──────────────────────────────────────────────────────────────┘
 ```
+
 
 ### What Veritas Proves vs Cannot Prove
 
